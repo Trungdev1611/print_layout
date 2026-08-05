@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ApplicationPackage SchemaVersion="1.0"
+                    AutodeskProduct="AutoCAD"
+                    Name="PrintLayoutAddin"
+                    Description="Auto-number frames and generate layouts + viewports"
+                    AppVersion="2.0.0"
+                    ProductCode="{A3F51234-1C8E-4F8A-9C2D-0001AABBCCDD}"
+                    SupportedLocales="Enu"
+                    ProductType="Application">
+  <CompanyDetails Name="Inno" />
+
+  <!-- AutoCAD 2018-2024 run on .NET Framework 4.8 -> load the net48 build.
+       R22.0 = AutoCAD 2018 ... R24.3 = AutoCAD 2024 -->
+  <Components Description="PrintLayoutAddin (.NET Framework, AutoCAD 2018-2024)">
+    <RuntimeRequirements OS="Win64" Platform="AutoCAD" SeriesMin="R22.0" SeriesMax="R24.3" />
+    <ComponentEntry AppName="PrintLayoutAddin"
+                    ModuleName="./Contents/net48/PrintLayoutAddin.dll"
+                    AppDescription="PrintLayoutAddin"
+                    LoadOnAutoCADStartup="True"
+                    LoadOnCommandInvocation="False" />
+  </Components>
+
+  <!-- AutoCAD 2025 and newer run on .NET 8 -> load the net8 build.
+       R25.0 = AutoCAD 2025; no SeriesMax so 2026+ are covered too. -->
+  <Components Description="PrintLayoutAddin (.NET 8, AutoCAD 2025+)">
+    <RuntimeRequirements OS="Win64" Platform="AutoCAD" SeriesMin="R25.0" />
+    <ComponentEntry AppName="PrintLayoutAddin"
+                    ModuleName="./Contents/net8/PrintLayoutAddin.dll"
+                    AppDescription="PrintLayoutAddin"
+                    LoadOnAutoCADStartup="True"
+                    LoadOnCommandInvocation="False" />
+  </Components>
+</ApplicationPackage>
