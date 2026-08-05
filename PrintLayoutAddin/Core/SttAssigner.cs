@@ -13,6 +13,8 @@ namespace PrintLayoutAddin.Core
         public int FramesSkipped;
         /// <summary>Number of codes in the supplied list that were never applied.</summary>
         public int CodesUnused;
+        public int DrawingNamesAssigned;
+        public int DrawingNameAttributesMissing;
         /// <summary>True when no drawing change was committed (validation abort).</summary>
         public bool Aborted;
         /// <summary>Short human-readable explanation when <see cref="Aborted"/> is true.</summary>
@@ -40,6 +42,7 @@ namespace PrintLayoutAddin.Core
             ObjectId polyId,
             string blockName,
             List<string> codes,
+            List<string> drawingNames = null,
             bool allowMismatch = false)
         {
             var cfg = Config.Instance;
@@ -107,6 +110,14 @@ namespace PrintLayoutAddin.Core
                 {
                     var br = (BlockReference)tr.GetObject(pending[i], OpenMode.ForWrite);
                     FrameScanner.WriteStt(br, codes[i], cfg, tr);
+                    if (drawingNames != null && i < drawingNames.Count
+                        && !string.IsNullOrWhiteSpace(drawingNames[i]))
+                    {
+                        if (FrameScanner.WriteDrawingName(br, drawingNames[i], cfg, tr))
+                            result.DrawingNamesAssigned++;
+                        else
+                            result.DrawingNameAttributesMissing++;
+                    }
                 }
                 result.Assigned = n;
                 result.FramesSkipped = frames.Count - n; // all non-written frames
@@ -126,8 +137,18 @@ namespace PrintLayoutAddin.Core
             ObjectId polyId,
             string blockName,
             List<string> codes,
+            List<string> drawingNames,
             bool allowMismatch = false)
-            => Run(db, ed, polyId, blockName, codes, allowMismatch);
+            => Run(db, ed, polyId, blockName, codes, drawingNames, allowMismatch);
+
+        public static SttAssignResult ApplyNumbersToSelectedFrames(
+            Database db,
+            Editor ed,
+            ObjectId polyId,
+            string blockName,
+            List<string> codes,
+            bool allowMismatch = false)
+            => Run(db, ed, polyId, blockName, codes, null, allowMismatch);
 
         // ------------------------------------------------------------
         // Helper: count how many frames of <paramref name="blockName"/>

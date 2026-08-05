@@ -70,11 +70,13 @@ namespace PrintLayoutAddin
 
             // Step 4 — dialog: choose mode, generate / import codes, validate preview.
             System.Collections.Generic.List<string> codes;
+            System.Collections.Generic.List<string> drawingNames;
             bool allowMismatch;
             using (var dlg = new SttOptionsDialog(expectedCount))
             {
                 if (AcadApp.ShowModalDialog(dlg) != DialogResult.OK) return;
                 codes = dlg.Codes;
+                drawingNames = dlg.DrawingNames;
                 allowMismatch = dlg.AllowCountMismatch;
             }
             if (codes == null || codes.Count == 0)
@@ -88,7 +90,7 @@ namespace PrintLayoutAddin
             try
             {
                 var result = SttAssigner.ApplyNumbersToSelectedFrames(
-                    db, ed, polyId, choice.Name, codes, allowMismatch);
+                    db, ed, polyId, choice.Name, codes, drawingNames, allowMismatch);
                 if (result.Aborted)
                 {
                     ed.WriteMessage("\nPLSTT aborted — " + result.Message);
@@ -99,6 +101,13 @@ namespace PrintLayoutAddin
                                 $"Vertices missing a frame: {result.VertexMissed}. " +
                                 $"Frames left unnumbered: {result.FramesSkipped}. " +
                                 $"Codes unused: {result.CodesUnused}.");
+                if (drawingNames != null)
+                {
+                    ed.WriteMessage(
+                        $"\nDrawing names assigned: {result.DrawingNamesAssigned}. " +
+                        $"Frames missing attribute '{Config.Instance.DrawingNameTag}': " +
+                        $"{result.DrawingNameAttributesMissing}.");
+                }
             }
             catch (System.Exception ex)
             {
@@ -503,7 +512,13 @@ namespace PrintLayoutAddin
 
             try
             {
-                NativeFrameBuilder.EnsureFrameBlock(db, nativeBlockName, w, h, Config.Instance.AttributeTag);
+                NativeFrameBuilder.EnsureFrameBlock(
+                    db,
+                    nativeBlockName,
+                    w,
+                    h,
+                    Config.Instance.AttributeTag,
+                    Config.Instance.DrawingNameTag);
                 int inserted = NativeFrameBuilder.InsertFrames(db, nativeBlockName, hits);
                 ed.WriteMessage(
                     $"\nCreated native block '{nativeBlockName}' ({w:F1} x {h:F1}) and inserted {inserted} frame(s) in ModelSpace.");

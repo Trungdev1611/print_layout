@@ -140,26 +140,38 @@ namespace PrintLayoutAddin.Core
 
         public static bool WriteStt(BlockReference br, string value, Config cfg, Transaction tr)
         {
-            bool wroteAttribute = false;
-            foreach (ObjectId attId in br.AttributeCollection)
-            {
-                var att = tr.GetObject(attId, OpenMode.ForWrite) as AttributeReference;
-                if (att == null) continue;
-                if (string.Equals(att.Tag, cfg.AttributeTag, StringComparison.OrdinalIgnoreCase))
-                {
-                    att.TextString = value;
-                    wroteAttribute = true;
-                }
-            }
-            if (wroteAttribute) return true;
+            if (WriteAttribute(br, cfg.AttributeTag, value, tr)) return true;
 
-            // Fallback: write XData
+            // STT keeps its legacy XData fallback because downstream layout
+            // generation can read it when an xref does not expose attributes.
             EnsureRegApp(br.Database, cfg.XdataAppName, tr);
             var brW = (BlockReference)tr.GetObject(br.ObjectId, OpenMode.ForWrite);
             brW.XData = new ResultBuffer(
                 new TypedValue((int)DxfCode.ExtendedDataRegAppName, cfg.XdataAppName),
                 new TypedValue((int)DxfCode.ExtendedDataAsciiString, value ?? ""));
             return true;
+        }
+
+        public static bool WriteDrawingName(BlockReference br, string value, Config cfg, Transaction tr)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return false;
+            return WriteAttribute(br, cfg.DrawingNameTag, value, tr);
+        }
+
+        private static bool WriteAttribute(BlockReference br, string tag, string value, Transaction tr)
+        {
+            if (string.IsNullOrWhiteSpace(tag)) return false;
+            foreach (ObjectId attId in br.AttributeCollection)
+            {
+                var att = tr.GetObject(attId, OpenMode.ForWrite) as AttributeReference;
+                if (att == null) continue;
+                if (string.Equals(att.Tag, tag, StringComparison.OrdinalIgnoreCase))
+                {
+                    att.TextString = value;
+                    return true;
+                }
+            }
+            return false;
         }
 
         private static void EnsureRegApp(Database db, string appName, Transaction tr)

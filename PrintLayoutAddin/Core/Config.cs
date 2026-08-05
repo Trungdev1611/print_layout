@@ -7,7 +7,13 @@ namespace PrintLayoutAddin.Core
 {
     public class Config
     {
-        public string AttributeTag { get; set; } = "INNO-STT";
+        // Central defaults for frame attributes. Deployments can override either
+        // value in config.json without recompiling the add-in.
+        public const string DefaultFrameNumberTag = "INNO-STT";
+        public const string DefaultDrawingNameTag = "INNO_NAME_DRAWING";
+
+        public string AttributeTag { get; set; } = DefaultFrameNumberTag;
+        public string DrawingNameTag { get; set; } = DefaultDrawingNameTag;
         public string VpLayer { get; set; } = "360D-Mview";
         public string XdataAppName { get; set; } = "PLADDIN_STT";
         public string TemplateLayout { get; set; } = "Layout1";
@@ -27,6 +33,7 @@ namespace PrintLayoutAddin.Core
 
                 var json = File.ReadAllText(path);
                 cfg.AttributeTag = ExtractString(json, "attributeTag") ?? cfg.AttributeTag;
+                cfg.DrawingNameTag = ExtractString(json, "drawingNameTag") ?? cfg.DrawingNameTag;
                 cfg.VpLayer = ExtractString(json, "vpLayer") ?? cfg.VpLayer;
                 cfg.XdataAppName = ExtractString(json, "xdataAppName") ?? cfg.XdataAppName;
                 cfg.TemplateLayout = ExtractString(json, "templateLayout") ?? cfg.TemplateLayout;

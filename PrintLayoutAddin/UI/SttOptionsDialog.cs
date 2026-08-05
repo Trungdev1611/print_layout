@@ -38,6 +38,7 @@ namespace PrintLayoutAddin.UI
 
         // Outputs
         public List<string> Codes { get; private set; }
+        public List<string> DrawingNames { get; private set; }
         public NumberingMode Mode { get; private set; }
         public bool AllowCountMismatch { get; private set; }
 
@@ -57,8 +58,15 @@ namespace PrintLayoutAddin.UI
         private Label _iStatus;
         private Button _iImportBtn, _iExportBtn;
         private List<string> _importedCodes;
+        private List<string> _importedDrawingNames;
+        private bool _importHasDrawingNames;
         private string _importedSourcePath;
         private List<string> _importedNotes;
+
+        // Optional drawing-name assignment (shared by all numbering modes).
+        private CheckBox _assignDrawingNameChk;
+        private TextBox _nPrefix, _nSuffix, _nSkip;
+        private NumericUpDown _nStart, _nStep, _nPadding;
 
         // Preview + validation + buttons
         private DataGridView _grid;
@@ -73,11 +81,11 @@ namespace PrintLayoutAddin.UI
 
             Text = "Number frames";
             Width = 880;
-            Height = 840;
+            Height = 930;
             StartPosition = FormStartPosition.CenterParent;
             MinimizeBox = false;
             MaximizeBox = false;
-            MinimumSize = new Size(760, 720);
+            MinimumSize = new Size(800, 820);
 
             BuildLayout();
             LoadFromRegistry();
@@ -95,11 +103,12 @@ namespace PrintLayoutAddin.UI
             {
                 Dock = DockStyle.Fill,
                 ColumnCount = 1,
-                RowCount = 5,
+                RowCount = 6,
                 Padding = new Padding(8),
             };
             root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 420)); // tabs
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 105)); // drawing names
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));  // preview row
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));  // validation
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));  // grid
@@ -110,6 +119,7 @@ namespace PrintLayoutAddin.UI
             _tabs.Controls.Add(BuildAdvancedTab());
             _tabs.Controls.Add(BuildImportTab());
             root.Controls.Add(_tabs, 0, 0);
+            root.Controls.Add(BuildDrawingNamePanel(), 0, 1);
 
             // Preview row
             var previewPanel = new FlowLayoutPanel
@@ -144,7 +154,7 @@ namespace PrintLayoutAddin.UI
             previewPanel.Controls.Add(_previewBtn);
             previewPanel.Controls.Add(_counter);
             previewPanel.Controls.Add(_allowMismatchChk);
-            root.Controls.Add(previewPanel, 0, 1);
+            root.Controls.Add(previewPanel, 0, 2);
 
             // Validation label
             _validation = new Label
@@ -155,7 +165,7 @@ namespace PrintLayoutAddin.UI
                 Padding = new Padding(2),
                 Text = "",
             };
-            root.Controls.Add(_validation, 0, 2);
+            root.Controls.Add(_validation, 0, 3);
 
             // Grid
             _grid = new DataGridView
@@ -178,19 +188,26 @@ namespace PrintLayoutAddin.UI
             });
             _grid.Columns.Add(new DataGridViewTextBoxColumn
             {
-                HeaderText = "Code",
+                HeaderText = "Frame Number",
                 Name = "CodeCol",
                 AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill,
-                FillWeight = 60,
+                FillWeight = 35,
+            });
+            _grid.Columns.Add(new DataGridViewTextBoxColumn
+            {
+                HeaderText = "Drawing Name",
+                Name = "DrawingNameCol",
+                AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill,
+                FillWeight = 40,
             });
             _grid.Columns.Add(new DataGridViewTextBoxColumn
             {
                 HeaderText = "Note",
                 Name = "NoteCol",
                 AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill,
-                FillWeight = 40,
+                FillWeight = 25,
             });
-            root.Controls.Add(_grid, 0, 3);
+            root.Controls.Add(_grid, 0, 4);
 
             // Buttons
             var btnPanel = new FlowLayoutPanel
@@ -204,11 +221,79 @@ namespace PrintLayoutAddin.UI
             _okBtn.Click += (s, e) => Accept();
             btnPanel.Controls.Add(_cancelBtn);
             btnPanel.Controls.Add(_okBtn);
-            root.Controls.Add(btnPanel, 0, 4);
+            root.Controls.Add(btnPanel, 0, 5);
 
             Controls.Add(root);
             AcceptButton = _okBtn;
             CancelButton = _cancelBtn;
+        }
+
+        private Control BuildDrawingNamePanel()
+        {
+            var group = new GroupBox
+            {
+                Text = $"Drawing name attribute: {Config.Instance.DrawingNameTag}",
+                Dock = DockStyle.Fill,
+                Padding = new Padding(8),
+            };
+            var panel = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 8,
+                RowCount = 2,
+            };
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 165));
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 55));
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 35));
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 45));
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 20));
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 55));
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 20));
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
+            panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
+            panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
+
+            _assignDrawingNameChk = new CheckBox
+            {
+                Text = "Assign drawing names",
+                Dock = DockStyle.Fill,
+            };
+            _nPrefix = new TextBox { Dock = DockStyle.Fill };
+            _nSuffix = new TextBox { Dock = DockStyle.Fill };
+            _nSkip = new TextBox { Dock = DockStyle.Fill };
+            _nStart = Num(1, -100000, 1000000);
+            _nStep = Num(1, -10000, 10000);
+            _nPadding = Num(2, 0, 10);
+
+            panel.Controls.Add(_assignDrawingNameChk, 0, 0);
+            panel.SetRowSpan(_assignDrawingNameChk, 2);
+            panel.Controls.Add(new Label { Text = "Prefix", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 1, 0);
+            panel.Controls.Add(_nPrefix, 2, 0);
+            panel.Controls.Add(new Label { Text = "Start", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 3, 0);
+            panel.Controls.Add(_nStart, 4, 0);
+            panel.Controls.Add(new Label { Text = "Step", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 5, 0);
+            panel.Controls.Add(_nStep, 6, 0);
+            panel.Controls.Add(new Label
+            {
+                Text = "Import mode uses the DrawingName column when present.",
+                Dock = DockStyle.Fill,
+                ForeColor = Color.Gray,
+            }, 7, 0);
+            panel.Controls.Add(new Label { Text = "Suffix", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 1, 1);
+            panel.Controls.Add(_nSuffix, 2, 1);
+            panel.Controls.Add(new Label { Text = "Pad", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 3, 1);
+            panel.Controls.Add(_nPadding, 4, 1);
+            panel.Controls.Add(new Label { Text = "Skip", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 5, 1);
+            panel.Controls.Add(_nSkip, 6, 1);
+            panel.Controls.Add(new Label
+            {
+                Text = "Blank names are skipped; STT is still assigned.",
+                Dock = DockStyle.Fill,
+                ForeColor = Color.Gray,
+            }, 7, 1);
+
+            group.Controls.Add(panel);
+            return group;
         }
 
         private TabPage BuildSimpleTab()
@@ -479,9 +564,9 @@ namespace PrintLayoutAddin.UI
             {
                 Dock = DockStyle.Fill,
                 Text =
-                    "Import frame numbers from XLSX (.xlsx) or CSV/TXT (.csv, .txt).\r\n" +
+                    "Import frame numbers and drawing names from XLSX (.xlsx) or CSV/TXT (.csv, .txt).\r\n" +
                     "Required column: FrameNumber (or 'Code', 'STT', 'INNO-STT').\r\n" +
-                    "Optional columns: Order (sort key) and Note (ignored).",
+                    "Optional columns: DrawingName (or 'INNO_NAME_DRAWING'), Order and Note.",
                 ForeColor = Color.DimGray,
             }, 0, 0);
 
@@ -540,6 +625,7 @@ namespace PrintLayoutAddin.UI
         private void DoPreview(bool showErrors)
         {
             List<string> codes = null;
+            List<string> drawingNames = null;
             List<string> notes = null;
             var errors = new List<string>();
             var warnings = new List<string>();
@@ -563,6 +649,14 @@ namespace PrintLayoutAddin.UI
             catch (Exception ex)
             {
                 errors.Add(ex.Message);
+            }
+
+            if (codes != null && _assignDrawingNameChk.Checked)
+            {
+                if (mode == NumberingMode.Import && _importHasDrawingNames)
+                    drawingNames = new List<string>(_importedDrawingNames);
+                else
+                    drawingNames = GenerateDrawingNames(codes.Count, errors);
             }
 
             // Validate against expected count + duplicates
@@ -593,8 +687,11 @@ namespace PrintLayoutAddin.UI
             {
                 for (int i = 0; i < codes.Count; i++)
                 {
+                    var drawingName = (drawingNames != null && i < drawingNames.Count)
+                        ? drawingNames[i]
+                        : "";
                     var note = (notes != null && i < notes.Count) ? notes[i] : "";
-                    _grid.Rows.Add((i + 1).ToString(), codes[i] ?? "", note ?? "");
+                    _grid.Rows.Add((i + 1).ToString(), codes[i] ?? "", drawingName ?? "", note ?? "");
                 }
             }
             _grid.ResumeLayout();
@@ -625,9 +722,31 @@ namespace PrintLayoutAddin.UI
             _okBtn.Enabled = codes != null && codes.Count > 0 && errors.Count == 0;
             // expose latest preview so OK can take it directly
             _cachedCodes = codes;
+            _cachedDrawingNames = drawingNames;
         }
 
         private List<string> _cachedCodes;
+        private List<string> _cachedDrawingNames;
+
+        private List<string> GenerateDrawingNames(int count, List<string> errors)
+        {
+            var p = new SimpleGenerationParams
+            {
+                Prefix = _nPrefix.Text ?? "",
+                Suffix = _nSuffix.Text ?? "",
+                Start = (int)_nStart.Value,
+                Step = (int)_nStep.Value,
+                Padding = (int)_nPadding.Value,
+                Skip = NumberGenerator.ParseSkipList(_nSkip.Text),
+                Count = count,
+            };
+            if (p.Step == 0)
+            {
+                errors.Add("Drawing name Step must not be zero.");
+                return null;
+            }
+            return NumberGenerator.GenerateSimple(p);
+        }
 
         private List<string> GenerateSimpleFromUI(List<string> errors)
         {
@@ -701,7 +820,7 @@ namespace PrintLayoutAddin.UI
                     else NumberImporter.ExportTemplateCsv(sfd.FileName, rowCount);
                     MessageBox.Show(this,
                         $"Template saved:\n{sfd.FileName}\n\n" +
-                        $"Fill in the FrameNumber column ({rowCount} rows) then click Import File.",
+                        $"Fill in FrameNumber and optional DrawingName ({rowCount} rows), then click Import File.",
                         "Export template", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 }
                 catch (Exception ex)
@@ -743,6 +862,8 @@ namespace PrintLayoutAddin.UI
                     }
 
                     _importedCodes = import.Rows.Select(r => r.FrameNumber).ToList();
+                    _importedDrawingNames = import.Rows.Select(r => r.DrawingName ?? "").ToList();
+                    _importHasDrawingNames = import.HasDrawingNameColumn;
                     _importedNotes = import.Rows.Select(r => r.Note ?? "").ToList();
                     _importedSourcePath = ofd.FileName;
 
@@ -750,6 +871,11 @@ namespace PrintLayoutAddin.UI
                     sb.AppendLine($"File: {Path.GetFileName(ofd.FileName)}");
                     sb.Append($"Rows: {_importedCodes.Count}");
                     if (import.HasOrderColumn) sb.Append("  |  sorted by Order");
+                    if (import.HasDrawingNameColumn)
+                    {
+                        sb.Append("  |  DrawingName column detected");
+                        _assignDrawingNameChk.Checked = true;
+                    }
                     if (import.HasNoteColumn) sb.Append("  |  Note column detected");
                     if (import.Warnings.Count > 0)
                         sb.AppendLine().Append("Warnings: " + string.Join(" | ", import.Warnings));
@@ -798,6 +924,9 @@ namespace PrintLayoutAddin.UI
             }
 
             Codes = new List<string>(_cachedCodes);
+            DrawingNames = _cachedDrawingNames == null
+                ? null
+                : new List<string>(_cachedDrawingNames);
             Mode = (NumberingMode)_tabs.SelectedIndex;
             AllowCountMismatch = _allowMismatchChk.Checked;
             SaveToRegistry();
@@ -839,6 +968,13 @@ namespace PrintLayoutAddin.UI
                     }
 
                     _allowMismatchChk.Checked = (k.GetValue("AllowMismatch") as string) == "1";
+                    _assignDrawingNameChk.Checked = (k.GetValue("AssignDrawingName") as string) == "1";
+                    _nPrefix.Text = (k.GetValue("NPrefix") as string) ?? _nPrefix.Text;
+                    _nSuffix.Text = (k.GetValue("NSuffix") as string) ?? _nSuffix.Text;
+                    _nSkip.Text = (k.GetValue("NSkip") as string) ?? _nSkip.Text;
+                    _nStart.Value = ToDecimal(k.GetValue("NStart"), _nStart.Value);
+                    _nStep.Value = ToDecimal(k.GetValue("NStep"), _nStep.Value);
+                    _nPadding.Value = ToDecimal(k.GetValue("NPadding"), _nPadding.Value);
 
                     // Advanced
                     _aPrefix.Text = (k.GetValue("APrefix") as string) ?? _aPrefix.Text;
@@ -876,6 +1012,13 @@ namespace PrintLayoutAddin.UI
                     if (k == null) return;
                     k.SetValue("Mode", ((NumberingMode)_tabs.SelectedIndex).ToString());
                     k.SetValue("AllowMismatch", _allowMismatchChk.Checked ? "1" : "0");
+                    k.SetValue("AssignDrawingName", _assignDrawingNameChk.Checked ? "1" : "0");
+                    k.SetValue("NPrefix", _nPrefix.Text ?? "");
+                    k.SetValue("NSuffix", _nSuffix.Text ?? "");
+                    k.SetValue("NSkip", _nSkip.Text ?? "");
+                    k.SetValue("NStart", (int)_nStart.Value);
+                    k.SetValue("NStep", (int)_nStep.Value);
+                    k.SetValue("NPadding", (int)_nPadding.Value);
                     k.SetValue("APrefix", _aPrefix.Text ?? "");
                     k.SetValue("ASep", _aSep.Text ?? "");
                     k.SetValue("ADefaultSub", _aDefaultSub.Text ?? "");

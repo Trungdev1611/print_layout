@@ -20,6 +20,7 @@ namespace PrintLayoutAddin.Core
     {
         public int? Order;            // nullable because the Order column is optional
         public string FrameNumber = "";
+        public string DrawingName = "";
         public string Note = "";
         public int SourceLine;        // 1-based for error messages. Excludes header.
     }
@@ -30,6 +31,7 @@ namespace PrintLayoutAddin.Core
         public List<string> Errors = new List<string>();
         public List<string> Warnings = new List<string>();
         public bool HasOrderColumn;
+        public bool HasDrawingNameColumn;
         public bool HasNoteColumn;
         public bool Ok => Errors.Count == 0 && Rows.Count > 0;
     }
@@ -43,6 +45,8 @@ namespace PrintLayoutAddin.Core
             { "framenumber", "frameno", "frame_no", "frame#", "frame", "code", "number", "stt", "inno-stt" };
         private static readonly string[] OrderAliases =
             { "order", "stt#", "index", "idx", "no" };
+        private static readonly string[] DrawingNameAliases =
+            { "drawingname", "drawing_name", "namedrawing", "name_drawing", "inno_name_drawing", "tênbảnvẽ", "tenbanve" };
         private static readonly string[] NoteAliases =
             { "note", "notes", "comment", "description", "desc" };
 
@@ -281,12 +285,13 @@ namespace PrintLayoutAddin.Core
             }
 
             var header = rows[headerIdx];
-            int colFrame = -1, colOrder = -1, colNote = -1;
+            int colFrame = -1, colOrder = -1, colDrawingName = -1, colNote = -1;
             for (int c = 0; c < header.Length; c++)
             {
                 var norm = NormalizeHeader(header[c]);
                 if (colFrame < 0 && MatchesAny(norm, FrameNumberAliases)) colFrame = c;
                 else if (colOrder < 0 && MatchesAny(norm, OrderAliases)) colOrder = c;
+                else if (colDrawingName < 0 && MatchesAny(norm, DrawingNameAliases)) colDrawingName = c;
                 else if (colNote < 0 && MatchesAny(norm, NoteAliases)) colNote = c;
             }
 
@@ -299,6 +304,7 @@ namespace PrintLayoutAddin.Core
             }
 
             result.HasOrderColumn = colOrder >= 0;
+            result.HasDrawingNameColumn = colDrawingName >= 0;
             result.HasNoteColumn = colNote >= 0;
 
             int dataLine = 0;
@@ -309,6 +315,9 @@ namespace PrintLayoutAddin.Core
                 if (row == null || row.All(c => string.IsNullOrWhiteSpace(c))) continue; // skip blank rows
 
                 string frame = colFrame < row.Length ? (row[colFrame] ?? "").Trim() : "";
+                string drawingName = (colDrawingName >= 0 && colDrawingName < row.Length)
+                    ? (row[colDrawingName] ?? "").Trim()
+                    : "";
                 string note = (colNote >= 0 && colNote < row.Length) ? (row[colNote] ?? "").Trim() : "";
                 int? order = null;
                 if (colOrder >= 0 && colOrder < row.Length)
@@ -325,6 +334,7 @@ namespace PrintLayoutAddin.Core
                 {
                     Order = order,
                     FrameNumber = frame,
+                    DrawingName = drawingName,
                     Note = note,
                     SourceLine = dataLine
                 });
@@ -419,9 +429,9 @@ namespace PrintLayoutAddin.Core
             var sb = new StringBuilder();
             // UTF-8 BOM so Excel opens it with correct encoding
             sb.Append('\uFEFF');
-            sb.AppendLine("Order,FrameNumber,Note");
+            sb.AppendLine("Order,FrameNumber,DrawingName,Note");
             int n = Math.Max(0, rowCount);
-            for (int i = 1; i <= n; i++) sb.AppendLine($"{i},,");
+            for (int i = 1; i <= n; i++) sb.AppendLine($"{i},,,");
             File.WriteAllText(path, sb.ToString(), new UTF8Encoding(true));
         }
 
@@ -468,7 +478,8 @@ namespace PrintLayoutAddin.Core
                 sb.Append("<row r=\"1\">");
                 sb.Append(InlineStrCell("A1", "Order"));
                 sb.Append(InlineStrCell("B1", "FrameNumber"));
-                sb.Append(InlineStrCell("C1", "Note"));
+                sb.Append(InlineStrCell("C1", "DrawingName"));
+                sb.Append(InlineStrCell("D1", "Note"));
                 sb.Append("</row>");
 
                 int n = Math.Max(0, rowCount);
@@ -479,6 +490,7 @@ namespace PrintLayoutAddin.Core
                     sb.Append($"<c r=\"A{r}\"><v>{i}</v></c>");
                     sb.Append(InlineStrCell($"B{r}", ""));
                     sb.Append(InlineStrCell($"C{r}", ""));
+                    sb.Append(InlineStrCell($"D{r}", ""));
                     sb.Append("</row>");
                 }
                 sb.Append("</sheetData></worksheet>");

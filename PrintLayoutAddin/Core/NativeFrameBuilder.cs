@@ -177,10 +177,16 @@ namespace PrintLayoutAddin.Core
 
         /// <summary>
         /// Ensure a block definition named <paramref name="blockName"/> exists in <paramref name="db"/>,
-        /// sized width x height with an INNO-STT attribute centred inside. If the block already exists,
+        /// sized width x height with frame-number and drawing-name attributes. If the block already exists,
         /// it is replaced so size stays in sync with detected frames.
         /// </summary>
-        public static ObjectId EnsureFrameBlock(Database db, string blockName, double width, double height, string attributeTag)
+        public static ObjectId EnsureFrameBlock(
+            Database db,
+            string blockName,
+            double width,
+            double height,
+            string attributeTag,
+            string drawingNameTag)
         {
             using (var tr = db.TransactionManager.StartTransaction())
             {
@@ -220,21 +226,39 @@ namespace PrintLayoutAddin.Core
                 btr.AppendEntity(pl);
                 tr.AddNewlyCreatedDBObject(pl, true);
 
-                // AttributeDefinition for INNO-STT — centred, height ≈ 5% of frame height
+                // Attribute definitions — centred near each other, height ≈ 5% of frame height.
                 double h = Math.Max(1.0, Math.Min(width, height) * 0.05);
                 var att = new AttributeDefinition
                 {
                     Tag = attributeTag,
                     Prompt = attributeTag,
                     TextString = "",
-                    Position = new Point3d(width / 2.0, height / 2.0, 0),
+                    Position = new Point3d(width / 2.0, height / 2.0 + h, 0),
                     Height = h,
                     Justify = AttachmentPoint.MiddleCenter,
-                    AlignmentPoint = new Point3d(width / 2.0, height / 2.0, 0),
+                    AlignmentPoint = new Point3d(width / 2.0, height / 2.0 + h, 0),
                     LockPositionInBlock = true,
                 };
                 btr.AppendEntity(att);
                 tr.AddNewlyCreatedDBObject(att, true);
+
+                if (!string.IsNullOrWhiteSpace(drawingNameTag)
+                    && !string.Equals(attributeTag, drawingNameTag, StringComparison.OrdinalIgnoreCase))
+                {
+                    var nameAtt = new AttributeDefinition
+                    {
+                        Tag = drawingNameTag,
+                        Prompt = drawingNameTag,
+                        TextString = "",
+                        Position = new Point3d(width / 2.0, height / 2.0 - h, 0),
+                        Height = h,
+                        Justify = AttachmentPoint.MiddleCenter,
+                        AlignmentPoint = new Point3d(width / 2.0, height / 2.0 - h, 0),
+                        LockPositionInBlock = true,
+                    };
+                    btr.AppendEntity(nameAtt);
+                    tr.AddNewlyCreatedDBObject(nameAtt, true);
+                }
 
                 tr.Commit();
                 return btrId;
