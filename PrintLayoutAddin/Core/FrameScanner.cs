@@ -138,6 +138,35 @@ namespace PrintLayoutAddin.Core
             return null;
         }
 
+        public static string ReadDrawingName(BlockReference br, Config cfg)
+        {
+            return ReadAttribute(br, cfg.DrawingNameTag);
+        }
+
+        public static Dictionary<string, string> CollectDrawingNamesByStt(Database db)
+        {
+            var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var cfg = Config.Instance;
+            using (var tr = db.TransactionManager.StartTransaction())
+            {
+                var ms = (BlockTableRecord)tr.GetObject(
+                    SymbolUtilityServices.GetBlockModelSpaceId(db), OpenMode.ForRead);
+                foreach (ObjectId id in ms)
+                {
+                    if (id.ObjectClass.DxfName != "INSERT") continue;
+                    var br = tr.GetObject(id, OpenMode.ForRead) as BlockReference;
+                    if (br == null) continue;
+                    var stt = ReadStt(br, cfg);
+                    if (string.IsNullOrWhiteSpace(stt)) continue;
+                    var drawingName = ReadDrawingName(br, cfg);
+                    if (!string.IsNullOrWhiteSpace(drawingName))
+                        result[stt.Trim()] = drawingName.Trim();
+                }
+                tr.Commit();
+            }
+            return result;
+        }
+
         public static bool WriteStt(BlockReference br, string value, Config cfg, Transaction tr)
         {
             if (WriteAttribute(br, cfg.AttributeTag, value, tr)) return true;
@@ -172,6 +201,19 @@ namespace PrintLayoutAddin.Core
                 }
             }
             return false;
+        }
+
+        private static string ReadAttribute(BlockReference br, string tag)
+        {
+            if (string.IsNullOrWhiteSpace(tag)) return null;
+            foreach (ObjectId attId in br.AttributeCollection)
+            {
+                var att = attId.GetObject(OpenMode.ForRead) as AttributeReference;
+                if (att == null) continue;
+                if (string.Equals(att.Tag, tag, StringComparison.OrdinalIgnoreCase))
+                    return att.TextString;
+            }
+            return null;
         }
 
         private static void EnsureRegApp(Database db, string appName, Transaction tr)

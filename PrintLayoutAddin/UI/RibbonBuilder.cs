@@ -102,6 +102,20 @@ namespace PrintLayoutAddin.UI
                     .SendStringToExecute("_PLPRINT ", true, false, true))
             };
 
+            var btnSheetSet = new RibbonButton
+            {
+                Text = "Create\nSheet Set",
+                ShowText = true,
+                ShowImage = true,
+                LargeImage = DrawSheetSetIcon(32),
+                Image = DrawSheetSetIcon(16),
+                Size = RibbonItemSize.Large,
+                Orientation = Orientation.Vertical,
+                Description = "Order the current DWG layouts, create/update a DST, or export PDF (PLSHEETSET).",
+                CommandHandler = new RelayCommand(() => AcadApp.DocumentManager.MdiActiveDocument?
+                    .SendStringToExecute("_PLSHEETSET ", true, false, true))
+            };
+
             var btnClean = new RibbonButton
             {
                 Text = "Cleanup\nFrames",
@@ -161,6 +175,7 @@ namespace PrintLayoutAddin.UI
             panelSource.Items.Add(btnAuto);
             panelSource.Items.Add(btnStt);
             panelSource.Items.Add(btnLayout);
+            panelSource.Items.Add(btnSheetSet);
             panelSource.Items.Add(btnPrint);
             panelSource.Items.Add(btnClean);
             panelSource.Items.Add(btnReset);
@@ -347,6 +362,42 @@ namespace PrintLayoutAddin.UI
 
                 using (var dotBrush = new SolidBrush(green))
                     g.FillEllipse(dotBrush, size * 0.68f, size * 0.45f, size * 0.10f, size * 0.10f);
+            });
+        }
+
+        private static BitmapSource DrawSheetSetIcon(int size)
+        {
+            return BuildBitmap(size, g =>
+            {
+                g.Clear(Color.Transparent);
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                var blue = Color.FromArgb(255, 55, 110, 180);
+                var green = Color.FromArgb(255, 45, 145, 85);
+                float w = size * 0.58f;
+                float h = size * 0.68f;
+                float x = size * 0.16f;
+                float y = size * 0.14f;
+                using (var paper = new SolidBrush(Color.White))
+                using (var pen = new Pen(blue, Math.Max(1f, size / 18f)))
+                {
+                    for (int i = 2; i >= 0; i--)
+                    {
+                        float d = i * size * 0.09f;
+                        g.FillRectangle(paper, x + d, y - d, w, h);
+                        g.DrawRectangle(pen, x + d, y - d, w, h);
+                    }
+                }
+                using (var checkPen = new Pen(green, Math.Max(2f, size / 9f)))
+                {
+                    checkPen.StartCap = LineCap.Round;
+                    checkPen.EndCap = LineCap.Round;
+                    g.DrawLines(checkPen, new[]
+                    {
+                        new PointF(size * 0.28f, size * 0.58f),
+                        new PointF(size * 0.43f, size * 0.72f),
+                        new PointF(size * 0.75f, size * 0.38f),
+                    });
+                }
             });
         }
 

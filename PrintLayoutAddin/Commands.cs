@@ -404,6 +404,76 @@ namespace PrintLayoutAddin
             }
         }
 
+        [CommandMethod("PLSHEETSET")]
+        public void PlSheetSet()
+        {
+            var doc = AcadApp.DocumentManager.MdiActiveDocument;
+            if (doc == null) return;
+            var ed = doc.Editor;
+            if (!LicenseGate.Allow(ed)) return;
+            if (!EnsureSavedForPublish(doc, ed)) return;
+
+            try
+            {
+                var layouts = LayoutPlotter.GetPrintableLayouts(doc.Database)
+                    .Where(x => !string.Equals(
+                        x.Name,
+                        Config.Instance.TemplateLayout,
+                        StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+                if (layouts.Count == 0)
+                {
+                    ed.WriteMessage("\nNo generated paper-space layouts were found.");
+                    return;
+                }
+
+                var drawingNames = FrameScanner.CollectDrawingNamesByStt(doc.Database);
+                var defaultDstPath = Path.ChangeExtension(doc.Name, ".dst");
+                using (var dlg = new SheetSetDialog(
+                    layouts,
+                    drawingNames,
+                    doc.Name,
+                    defaultDstPath))
+                {
+                    if (AcadApp.ShowModalDialog(dlg) != DialogResult.OK) return;
+                    if (dlg.ExportLayouts == null || dlg.ExportLayouts.Count == 0) return;
+                    SavePrintLayoutSelection(dlg.ExportLayouts);
+                }
+
+                // Queue the existing, proven PLPRINT workflow. Its dialog opens
+                // with exactly the order and selection chosen in the sheet-set table.
+                doc.SendStringToExecute("_PLPRINT ", true, false, true);
+            }
+            catch (System.Exception ex)
+            {
+                ed.WriteMessage("\nPLSHEETSET failed: " + ex.Message);
+            }
+        }
+
+        private static void SavePrintLayoutSelection(
+            System.Collections.Generic.IEnumerable<PrintableLayout> layouts)
+        {
+            try
+            {
+                var names = layouts
+                    .Where(x => x != null && !string.IsNullOrWhiteSpace(x.Name))
+                    .Select(x => x.Name)
+                    .ToArray();
+                using (var key = Registry.CurrentUser.CreateSubKey(RegKey))
+                {
+                    key?.SetValue(
+                        "PrintLayoutOrder",
+                        names,
+                        Microsoft.Win32.RegistryValueKind.MultiString);
+                    key?.SetValue(
+                        "PrintLayoutChecked",
+                        names,
+                        Microsoft.Win32.RegistryValueKind.MultiString);
+                }
+            }
+            catch { }
+        }
+
         [CommandMethod("PLAUTO")]
         public void PlAuto()
         {

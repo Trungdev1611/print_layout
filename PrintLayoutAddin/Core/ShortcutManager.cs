@@ -59,6 +59,7 @@ namespace PrintLayoutAddin.Core
             new ShortcutDef("PLAUTO",    "Auto Frames",       Keys.None),
             new ShortcutDef("PLSTT",     "Number Frames",     Keys.None),
             new ShortcutDef("PLAYOUT",   "Build Layouts",     Keys.None),
+            new ShortcutDef("PLSHEETSET","Create Sheet Set",  Keys.None),
             new ShortcutDef("PLPRINT",   "Print / Export PDF",Keys.None),
             new ShortcutDef("PLCLEAN",   "Cleanup Frames",    Keys.None),
             new ShortcutDef("PLVP",      "Reset Corners",     Keys.None),

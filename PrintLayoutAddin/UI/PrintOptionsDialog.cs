@@ -19,6 +19,7 @@ namespace PrintLayoutAddin.UI
         private readonly List<PrintableLayout> _layouts;
         private readonly string _templateLayoutName;
         private readonly string _defaultPdfPath;
+        private readonly bool _preserveInputOrder;
 
         private CheckedListBox _layoutList;
         private ComboBox _deviceCombo;
@@ -41,12 +42,14 @@ namespace PrintLayoutAddin.UI
             Database db,
             IEnumerable<PrintableLayout> layouts,
             string templateLayoutName,
-            string defaultPdfPath)
+            string defaultPdfPath,
+            bool preserveInputOrder = false)
         {
             _db = db;
             _layouts = layouts?.ToList() ?? new List<PrintableLayout>();
             _templateLayoutName = templateLayoutName ?? "";
             _defaultPdfPath = defaultPdfPath;
+            _preserveInputOrder = preserveInputOrder;
 
             Text = "Print / Export PDF";
             Width = 760;
@@ -114,7 +117,10 @@ namespace PrintLayoutAddin.UI
             var savedOrder = ReadMultiString("PrintLayoutOrder");
             var savedChecked = ReadMultiString("PrintLayoutChecked");
             bool anyChecked = false;
-            foreach (var layout in ApplySavedOrder(_layouts, savedOrder))
+            var displayLayouts = _preserveInputOrder
+                ? _layouts
+                : ApplySavedOrder(_layouts, savedOrder);
+            foreach (var layout in displayLayouts)
             {
                 bool check = savedChecked != null
                     ? savedChecked.Contains(layout.Name, StringComparer.OrdinalIgnoreCase)
