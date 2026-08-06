@@ -31,6 +31,10 @@ namespace PrintLayoutAddin.UI
             string dwgPath,
             string defaultDstPath)
         {
+            var fixedDstPath = string.IsNullOrWhiteSpace(defaultDstPath)
+                ? PublishPaths.DefaultDstPath(dwgPath)
+                : defaultDstPath;
+
             var items = (layouts ?? Enumerable.Empty<PrintableLayout>())
                 .Select((layout, index) => new SheetSetEntry
                 {
@@ -46,6 +50,31 @@ namespace PrintLayoutAddin.UI
                     Layout = layout,
                 })
                 .ToList();
+
+            string sheetSetName = Path.GetFileNameWithoutExtension(dwgPath ?? "") ?? "SheetSet";
+            string loadedFrom = null;
+            var existing = SheetSetService.TryRead(fixedDstPath);
+            if (existing != null)
+            {
+                loadedFrom = fixedDstPath;
+                if (!string.IsNullOrWhiteSpace(existing.SheetSetName))
+                    sheetSetName = existing.SheetSetName;
+
+                var byLayout = existing.Sheets
+                    .Where(s => !string.IsNullOrWhiteSpace(s.LayoutName))
+                    .GroupBy(s => s.LayoutName, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+
+                foreach (var entry in items)
+                {
+                    if (!byLayout.TryGetValue(entry.LayoutName, out var sheet)) continue;
+                    if (!string.IsNullOrWhiteSpace(sheet.Number))
+                        entry.SheetNumber = sheet.Number;
+                    if (!string.IsNullOrWhiteSpace(sheet.Title))
+                        entry.Title = sheet.Title;
+                }
+            }
+
             _entries = new BindingList<SheetSetEntry>(items);
 
             Text = "Create Sheet Set";
@@ -57,7 +86,7 @@ namespace PrintLayoutAddin.UI
             MaximizeBox = true;
 
             BuildUi();
-            LoadDefaults(defaultDstPath);
+            ApplyFixedPath(fixedDstPath, sheetSetName, loadedFrom);
             RefreshOrders();
             ValidateUi();
         }
@@ -106,19 +135,20 @@ namespace PrintLayoutAddin.UI
             panel.Controls.Add(_nameBox, 1, 0);
 
             panel.Controls.Add(LabelFor("DST file"), 0, 1);
-            _pathBox = new TextBox { Dock = DockStyle.Fill };
-            _pathBox.TextChanged += (s, e) => ValidateUi();
+            _pathBox = new TextBox
+            {
+                Dock = DockStyle.Fill,
+                ReadOnly = true,
+                BackColor = SystemColors.Control,
+            };
             panel.Controls.Add(_pathBox, 1, 1);
-            panel.SetColumnSpan(_pathBox, 3);
-
-            var browse = new Button { Text = "Browse…", Dock = DockStyle.Fill };
-            browse.Click += (s, e) => BrowseDst();
-            panel.Controls.Add(browse, 4, 1);
+            panel.SetColumnSpan(_pathBox, 4);
 
             var hint = new Label
             {
-                Text = "Workflow B: Sheet Number starts from STT / layout name; Sheet Title starts from "
-                    + Config.Instance.DrawingNameTag + ".",
+                Text = "DST is fixed under the drawing's sheetset_manager folder. "
+                    + "Existing DST values are loaded when present; otherwise Sheet Number/Title "
+                    + "start from layout STT / " + Config.Instance.DrawingNameTag + ".",
                 Dock = DockStyle.Fill,
                 ForeColor = Color.DimGray,
                 TextAlign = ContentAlignment.MiddleLeft,
@@ -223,9 +253,13 @@ namespace PrintLayoutAddin.UI
 
             _source.DataSource = _entries;
             _grid.DataSource = _source;
+            // Only auto-commit checkbox toggles. Committing text cells here ends the
+            // edit after the first typed character (classic DataGridView gotcha).
             _grid.CurrentCellDirtyStateChanged += (s, e) =>
             {
-                if (_grid.IsCurrentCellDirty) _grid.CommitEdit(DataGridViewDataErrorContexts.Commit);
+                if (!_grid.IsCurrentCellDirty) return;
+                if (_grid.CurrentCell is DataGridViewCheckBoxCell)
+                    _grid.CommitEdit(DataGridViewDataErrorContexts.Commit);
             };
             _grid.CellValueChanged += (s, e) => ValidateUi();
             return _grid;
@@ -321,9 +355,8 @@ namespace PrintLayoutAddin.UI
             var path = NormalizeDstPath(_pathBox.Text);
             if (string.IsNullOrWhiteSpace(path))
             {
-                BrowseDst();
-                path = NormalizeDstPath(_pathBox.Text);
-                if (string.IsNullOrWhiteSpace(path)) return;
+                SetStatus("DST path is missing.", true);
+                return;
             }
             if (File.Exists(path))
             {
@@ -415,40 +448,14 @@ namespace PrintLayoutAddin.UI
                 _status.Text = $"{count} of {_entries.Count} layout(s) selected.";
         }
 
-        private void BrowseDst()
+        private void ApplyFixedPath(string dstPath, string sheetSetName, string loadedFrom)
         {
-            using (var dlg = new System.Windows.Forms.SaveFileDialog
-            {
-                Title = "Create or update AutoCAD Sheet Set",
-                Filter = "AutoCAD Sheet Set (*.dst)|*.dst",
-                DefaultExt = "dst",
-                AddExtension = true,
-                FileName = Path.GetFileName(NormalizeDstPath(_pathBox.Text)),
-                InitialDirectory = SafeDirectory(_pathBox.Text),
-            })
-            {
-                if (dlg.ShowDialog(this) != DialogResult.OK) return;
-                _pathBox.Text = dlg.FileName;
-                if (string.IsNullOrWhiteSpace(_nameBox.Text))
-                    _nameBox.Text = Path.GetFileNameWithoutExtension(dlg.FileName);
-            }
-        }
-
-        private void LoadDefaults(string defaultDstPath)
-        {
-            string path = defaultDstPath;
-            string name = Path.GetFileNameWithoutExtension(defaultDstPath);
-            try
-            {
-                using (var key = Registry.CurrentUser.OpenSubKey(RegKey))
-                {
-                    path = (key?.GetValue("LastDstPath") as string) ?? path;
-                    name = (key?.GetValue("LastSheetSetName") as string) ?? name;
-                }
-            }
-            catch { }
-            _pathBox.Text = path ?? "";
-            _nameBox.Text = name ?? "";
+            _pathBox.Text = dstPath ?? "";
+            _nameBox.Text = sheetSetName ?? "";
+            if (!string.IsNullOrWhiteSpace(loadedFrom))
+                SetStatus("Loaded Number/Title from existing DST.", false);
+            else
+                SetStatus("No DST yet — seeded from layout STT / drawing-name attributes.", false);
         }
 
         private void SaveDefaults()
@@ -492,19 +499,6 @@ namespace PrintLayoutAddin.UI
             if (string.IsNullOrWhiteSpace(path)) return "";
             var value = path.Trim();
             return value.EndsWith(".dst", StringComparison.OrdinalIgnoreCase) ? value : value + ".dst";
-        }
-
-        private static string SafeDirectory(string path)
-        {
-            try
-            {
-                var dir = Path.GetDirectoryName(path);
-                return Directory.Exists(dir) ? dir : null;
-            }
-            catch
-            {
-                return null;
-            }
         }
     }
 }

@@ -11,12 +11,15 @@ namespace PrintLayoutAddin.Core
         // value in config.json without recompiling the add-in.
         public const string DefaultFrameNumberTag = "INNO-STT";
         public const string DefaultDrawingNameTag = "INNO_NAME_DRAWING";
+        public const string DefaultSheetSetFolderName = "sheetset_manager";
 
         public string AttributeTag { get; set; } = DefaultFrameNumberTag;
         public string DrawingNameTag { get; set; } = DefaultDrawingNameTag;
         public string VpLayer { get; set; } = "360D-Mview";
         public string XdataAppName { get; set; } = "PLADDIN_STT";
         public string TemplateLayout { get; set; } = "Layout1";
+        /// <summary>Subfolder next to the DWG for .dst + PDF defaults.</summary>
+        public string SheetSetFolderName { get; set; } = DefaultSheetSetFolderName;
 
         private static Config _instance;
 
@@ -37,6 +40,7 @@ namespace PrintLayoutAddin.Core
                 cfg.VpLayer = ExtractString(json, "vpLayer") ?? cfg.VpLayer;
                 cfg.XdataAppName = ExtractString(json, "xdataAppName") ?? cfg.XdataAppName;
                 cfg.TemplateLayout = ExtractString(json, "templateLayout") ?? cfg.TemplateLayout;
+                cfg.SheetSetFolderName = ExtractString(json, "sheetSetFolderName") ?? cfg.SheetSetFolderName;
             }
             catch
             {

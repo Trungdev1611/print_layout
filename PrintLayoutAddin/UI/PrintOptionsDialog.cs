@@ -401,7 +401,8 @@ namespace PrintLayoutAddin.UI
             _plotAreaCombo.SelectedIndex = string.Equals(lastPlotArea, "Extents", StringComparison.OrdinalIgnoreCase)
                 ? 1
                 : 0;
-            _outputPathBox.Text = !string.IsNullOrWhiteSpace(lastOutput) ? lastOutput : _defaultPdfPath;
+            // Prefer last path only when it still targets this drawing's sheetset_manager folder.
+            _outputPathBox.Text = ResolveOutputPath(lastOutput, _defaultPdfPath);
             UpdatePathForOutputMode();
 
             if (lastOrientation >= 0 && lastOrientation < _orientationCombo.Items.Count)
@@ -427,6 +428,21 @@ namespace PrintLayoutAddin.UI
             }
             catch { }
             return fallback;
+        }
+
+        private static string ResolveOutputPath(string remembered, string freshDefault)
+        {
+            if (string.IsNullOrWhiteSpace(remembered)) return freshDefault ?? "";
+            if (string.IsNullOrWhiteSpace(freshDefault)) return remembered;
+            try
+            {
+                var rememberedDir = Path.GetDirectoryName(remembered);
+                var expectedDir = Path.GetDirectoryName(freshDefault);
+                if (string.Equals(rememberedDir, expectedDir, StringComparison.OrdinalIgnoreCase))
+                    return remembered;
+            }
+            catch { }
+            return freshDefault;
         }
 
         private static string[] ReadMultiString(string name)

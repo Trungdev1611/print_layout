@@ -5,6 +5,10 @@ using System.IO;
 using System.Runtime.InteropServices;
 using AcadApp = Autodesk.AutoCAD.ApplicationServices.Application;
 
+#if ACSM_INTEROP
+using Autodesk.AutoCAD.Interop;
+#endif
+
 namespace PrintLayoutAddin.Core
 {
     public class SheetSetEntry
@@ -20,10 +24,24 @@ namespace PrintLayoutAddin.Core
         public string DwgName => Path.GetFileName(DwgPath ?? "");
     }
 
+    /// <summary>One sheet row read back from an existing .dst.</summary>
+    public class SheetSetSheetInfo
+    {
+        public string LayoutName { get; set; }
+        public string Number { get; set; }
+        public string Title { get; set; }
+    }
+
+    public class SheetSetReadResult
+    {
+        public string SheetSetName { get; set; }
+        public List<SheetSetSheetInfo> Sheets { get; } = new List<SheetSetSheetInfo>();
+    }
+
     /// <summary>
     /// Creates native AutoCAD .dst files through the in-process Sheet Set COM API.
-    /// Late binding avoids a version-specific AcSmComponents interop reference,
-    /// which would otherwise prevent one add-in build from spanning AutoCAD releases.
+    /// Uses typed AcSm* interop (vtable) rather than IDispatch late binding —
+    /// AcSmComponents on AutoCAD 2024+ does not implement IDispatch.
     /// </summary>
     public static class SheetSetService
     {
@@ -32,6 +50,11 @@ namespace PrintLayoutAddin.Core
             string sheetSetName,
             IList<SheetSetEntry> entries)
         {
+#if !ACSM_INTEROP
+            throw new InvalidOperationException(
+                "Sheet Set support was not compiled into this build (AcSmComponents.Interop.dll missing). "
+                + "Rebuild with AutoCAD installed, or pass /p:AcSmInteropPath=... to the build.");
+#else
             if (string.IsNullOrWhiteSpace(dstPath))
                 throw new ArgumentException("A .dst output path is required.", nameof(dstPath));
             if (!dstPath.EndsWith(".dst", StringComparison.OrdinalIgnoreCase))
@@ -42,21 +65,23 @@ namespace PrintLayoutAddin.Core
             var dir = Path.GetDirectoryName(dstPath);
             if (!string.IsNullOrWhiteSpace(dir)) Directory.CreateDirectory(dir);
 
-            object manager = null;
-            object database = null;
+            // Prefer the versioned ProgID so the RCW matches the running AutoCAD,
+            // then cast to the typed vtable interfaces from AcSmComponents.Interop.
+            IAcSmSheetSetMgr manager = null;
+            IAcSmDatabase database = null;
             bool locked = false;
             try
             {
-                manager = CreateComObject("AcSmSheetSetMgr");
-                database = Invoke(manager, "CreateDatabase", dstPath, "", true);
+                manager = (IAcSmSheetSetMgr)CreateComObject("AcSmSheetSetMgr");
+                database = manager.CreateDatabase(dstPath, "", true);
                 if (database == null)
                     throw new InvalidOperationException("AutoCAD did not create the sheet set database.");
 
-                Invoke(database, "LockDb", database);
+                database.LockDb(database);
                 locked = true;
 
-                var sheetSet = Invoke(database, "GetSheetSet");
-                Invoke(sheetSet, "SetName",
+                IAcSmSheetSet sheetSet = database.GetSheetSet();
+                sheetSet.SetName(
                     string.IsNullOrWhiteSpace(sheetSetName)
                         ? Path.GetFileNameWithoutExtension(dstPath)
                         : sheetSetName.Trim());
@@ -65,20 +90,26 @@ namespace PrintLayoutAddin.Core
                 {
                     if (entry == null || !entry.Include || entry.Layout == null) continue;
                     if (string.IsNullOrWhiteSpace(entry.DwgPath) || !File.Exists(entry.DwgPath))
-                        throw new FileNotFoundException("Save the source DWG before creating a sheet set.", entry.DwgPath);
+                        throw new FileNotFoundException(
+                            "Save the source DWG before creating a sheet set.", entry.DwgPath);
 
-                    var layoutRef = CreateComObject("AcSmAcDbLayoutReference");
-                    Invoke(layoutRef, "InitNew", sheetSet);
-                    Invoke(layoutRef, "SetFileName", entry.DwgPath);
-                    Invoke(layoutRef, "SetName", entry.Layout.Name);
+                    var layoutRef = (IAcSmAcDbLayoutReference)CreateComObject("AcSmAcDbLayoutReference");
+                    layoutRef.InitNew(sheetSet);
+                    layoutRef.SetFileName(entry.DwgPath);
+                    layoutRef.SetName(entry.Layout.Name);
 
-                    var sheet = Invoke(sheetSet, "ImportSheet", layoutRef);
+                    // ImportSheet expects the coclass/RCW type from the interop assembly.
+                    IAcSmSheet sheet = sheetSet.ImportSheet((AcSmAcDbLayoutReference)layoutRef);
                     if (sheet == null)
-                        throw new InvalidOperationException($"Could not import layout '{entry.Layout.Name}'.");
-                    Invoke(sheet, "SetNumber", entry.SheetNumber ?? "");
-                    Invoke(sheet, "SetTitle",
-                        string.IsNullOrWhiteSpace(entry.Title) ? entry.Layout.Name : entry.Title.Trim());
-                    Invoke(sheetSet, "InsertComponent", sheet, null);
+                        throw new InvalidOperationException(
+                            $"Could not import layout '{entry.Layout.Name}'.");
+
+                    sheet.SetNumber(entry.SheetNumber ?? "");
+                    sheet.SetTitle(
+                        string.IsNullOrWhiteSpace(entry.Title)
+                            ? entry.Layout.Name
+                            : entry.Title.Trim());
+                    sheetSet.InsertComponent(sheet, null);
 
                     ReleaseCom(sheet);
                     ReleaseCom(layoutRef);
@@ -87,7 +118,8 @@ namespace PrintLayoutAddin.Core
                 // Attach/refresh the sheet-set hint in the currently open DWG.
                 // CurrentSheetNumber / CurrentSheetTitle fields rely on this
                 // context to resolve the active layout to its sheet metadata.
-                try { Invoke(database, "UpdateInMemoryDwgHints"); } catch { }
+                try { database.UpdateInMemoryDwgHints(); } catch { }
+                try { sheetSet.UpdateInMemoryDwgHints(); } catch { }
 
                 ReleaseCom(sheetSet);
             }
@@ -101,17 +133,111 @@ namespace PrintLayoutAddin.Core
             {
                 if (database != null && locked)
                 {
-                    try { Invoke(database, "UnlockDb", database, true); } catch { }
+                    try { database.UnlockDb(database, true); } catch { }
                 }
                 if (manager != null && database != null)
                 {
-                    try { Invoke(manager, "Close", database); } catch { }
+                    try { manager.Close((AcSmDatabase)database); } catch { }
                 }
                 ReleaseCom(database);
                 ReleaseCom(manager);
             }
+#endif
         }
 
+        /// <summary>
+        /// Reads sheet number/title from an existing DST, keyed by layout name.
+        /// Returns null when the file is missing or cannot be opened.
+        /// </summary>
+        public static SheetSetReadResult TryRead(string dstPath)
+        {
+#if !ACSM_INTEROP
+            return null;
+#else
+            if (string.IsNullOrWhiteSpace(dstPath) || !File.Exists(dstPath))
+                return null;
+
+            IAcSmSheetSetMgr manager = null;
+            IAcSmDatabase database = null;
+            bool locked = false;
+            try
+            {
+                manager = (IAcSmSheetSetMgr)CreateComObject("AcSmSheetSetMgr");
+                database = manager.OpenDatabase(dstPath, false);
+                if (database == null) return null;
+
+                database.LockDb(database);
+                locked = true;
+
+                var sheetSet = database.GetSheetSet();
+                var result = new SheetSetReadResult
+                {
+                    SheetSetName = sheetSet?.GetName()
+                };
+
+                var enumerator = sheetSet?.GetSheetEnumerator();
+                if (enumerator != null)
+                {
+                    object next;
+                    while ((next = enumerator.Next()) != null)
+                    {
+                        var sheet = next as IAcSmSheet;
+                        if (sheet == null)
+                        {
+                            ReleaseCom(next);
+                            continue;
+                        }
+
+                        string layoutName = null;
+                        try
+                        {
+                            var layout = sheet.GetLayout();
+                            layoutName = layout?.GetName();
+                            ReleaseCom(layout);
+                        }
+                        catch { }
+
+                        if (string.IsNullOrWhiteSpace(layoutName))
+                        {
+                            ReleaseCom(sheet);
+                            continue;
+                        }
+
+                        result.Sheets.Add(new SheetSetSheetInfo
+                        {
+                            LayoutName = layoutName,
+                            Number = sheet.GetNumber() ?? "",
+                            Title = sheet.GetTitle() ?? "",
+                        });
+                        ReleaseCom(sheet);
+                    }
+                    ReleaseCom(enumerator);
+                }
+
+                ReleaseCom(sheetSet);
+                return result;
+            }
+            catch
+            {
+                return null;
+            }
+            finally
+            {
+                if (database != null && locked)
+                {
+                    try { database.UnlockDb(database, true); } catch { }
+                }
+                if (manager != null && database != null)
+                {
+                    try { manager.Close((AcSmDatabase)database); } catch { }
+                }
+                ReleaseCom(database);
+                ReleaseCom(manager);
+            }
+#endif
+        }
+
+#if ACSM_INTEROP
         private static object CreateComObject(string className)
         {
             var progIds = new List<string>();
@@ -120,19 +246,26 @@ namespace PrintLayoutAddin.Core
                 progIds.Add($"AcSmComponents.{className}.{major}");
             progIds.Add($"AcSmComponents.{className}");
 
+            Exception last = null;
             foreach (var progId in progIds)
             {
                 try
                 {
                     var type = Type.GetTypeFromProgID(progId, false);
-                    if (type != null) return Activator.CreateInstance(type);
+                    if (type == null) continue;
+                    var instance = Activator.CreateInstance(type);
+                    if (instance != null) return instance;
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    last = ex;
+                }
             }
 
             throw new InvalidOperationException(
                 $"AutoCAD Sheet Set component '{className}' is unavailable. "
-                + "Run this command inside a supported full AutoCAD installation.");
+                + "Run this command inside a supported full AutoCAD installation."
+                + (last != null ? " " + last.Message : ""));
         }
 
         private static int GetAcadMajorVersion()
@@ -155,18 +288,6 @@ namespace PrintLayoutAddin.Core
             }
         }
 
-        private static object Invoke(object target, string method, params object[] args)
-        {
-            if (target == null) throw new ArgumentNullException(nameof(target));
-            return target.GetType().InvokeMember(
-                method,
-                System.Reflection.BindingFlags.InvokeMethod,
-                null,
-                target,
-                args,
-                CultureInfo.InvariantCulture);
-        }
-
         private static void ReleaseCom(object value)
         {
             if (value == null) return;
@@ -176,5 +297,6 @@ namespace PrintLayoutAddin.Core
             }
             catch { }
         }
+#endif
     }
 }

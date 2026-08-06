@@ -21,6 +21,11 @@
     <AppendTargetFrameworkToOutputPath>true</AppendTargetFrameworkToOutputPath>
     <!-- Local AutoCAD SDK used ONLY for the net48 build. Override with /p:AutoCADPath=... -->
     <AutoCADPath Condition="'$(AutoCADPath)' == ''">C:\Program Files\Autodesk\AutoCAD 2018</AutoCADPath>
+    <!-- Sheet Set Manager interop (prebuilt by AutoCAD). Prefer AutoCADPath copy so
+         `dotnet build` works (COMFileReference / ResolveComReference needs Framework MSBuild). -->
+    <AcSmInteropPath Condition="'$(AcSmInteropPath)' == '' and Exists('$(AutoCADPath)\AcSmComponents.Interop.dll')">$(AutoCADPath)\AcSmComponents.Interop.dll</AcSmInteropPath>
+    <AcSmInteropPath Condition="'$(AcSmInteropPath)' == '' and Exists('C:\Program Files\Autodesk\AutoCAD 2024\AcSmComponents.Interop.dll')">C:\Program Files\Autodesk\AutoCAD 2024\AcSmComponents.Interop.dll</AcSmInteropPath>
+    <DefineConstants Condition="'$(AcSmInteropPath)' != ''">$(DefineConstants);ACSM_INTEROP</DefineConstants>
   </PropertyGroup>
 
   <!-- ===================== AutoCAD 2018-2024 : .NET Framework 4.8 ===================== -->
@@ -61,6 +66,16 @@
        CopyLocalLockFileAssemblies=false keeps them out of the output (AutoCAD provides them). -->
   <ItemGroup Condition="'$(TargetFramework)' == 'net8.0-windows'">
     <PackageReference Include="ModPlus.AutoCAD.API.2025" Version="3.0.0" />
+  </ItemGroup>
+
+  <!-- Sheet Set COM API (AcSm*). Late-bound InvokeMember fails on modern AutoCAD
+       ("COM target does not implement IDispatch"); typed interop is required. -->
+  <ItemGroup Condition="'$(AcSmInteropPath)' != ''">
+    <Reference Include="AcSmComponents.Interop">
+      <HintPath>$(AcSmInteropPath)</HintPath>
+      <EmbedInteropTypes>true</EmbedInteropTypes>
+      <Private>false</Private>
+    </Reference>
   </ItemGroup>
 
   <ItemGroup>

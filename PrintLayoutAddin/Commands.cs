@@ -428,7 +428,7 @@ namespace PrintLayoutAddin
                 }
 
                 var drawingNames = FrameScanner.CollectDrawingNamesByStt(doc.Database);
-                var defaultDstPath = Path.ChangeExtension(doc.Name, ".dst");
+                var defaultDstPath = PublishPaths.DefaultDstPath(doc.Name);
                 using (var dlg = new SheetSetDialog(
                     layouts,
                     drawingNames,
@@ -842,24 +842,7 @@ namespace PrintLayoutAddin
 
         private static string DefaultPdfPath(Document doc)
         {
-            string dir = null;
-            string name = "PrintLayout";
-            try
-            {
-                if (!string.IsNullOrWhiteSpace(doc?.Name))
-                {
-                    dir = Path.GetDirectoryName(doc.Name);
-                    name = Path.GetFileNameWithoutExtension(doc.Name);
-                }
-            }
-            catch { }
-
-            if (string.IsNullOrWhiteSpace(dir))
-                dir = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
-            if (string.IsNullOrWhiteSpace(name))
-                name = "PrintLayout";
-
-            return Path.Combine(dir, name + "_layout.pdf");
+            return PublishPaths.DefaultPdfPath(doc?.Name);
         }
 
         private static bool EnsureSavedForPublish(Document doc, Editor ed)
@@ -888,13 +871,29 @@ namespace PrintLayoutAddin
 
             try
             {
-                doc.Database.SaveAs(doc.Name, doc.Database.OriginalFileVersion);
+                // Must lock the document — SaveAs from a WinForms MessageBox callback
+                // otherwise often throws and the command aborts with no dialog.
+                using (doc.LockDocument())
+                {
+                    doc.Database.SaveAs(
+                        doc.Name,
+                        true,
+                        doc.Database.OriginalFileVersion,
+                        doc.Database.SecurityParameters);
+                }
                 ed.WriteMessage("\nDrawing saved.");
                 return true;
             }
             catch (System.Exception ex)
             {
                 ed.WriteMessage("\nCould not save the drawing: " + ex.Message);
+                MessageBox.Show(
+                    "Could not save the drawing:\n\n" + ex.Message +
+                    "\n\nTip: save manually (Ctrl+S), then run the command again.\n" +
+                    "Or click No on the previous prompt to export the last saved version.",
+                    "Print / Export PDF",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error);
                 return false;
             }
         }
