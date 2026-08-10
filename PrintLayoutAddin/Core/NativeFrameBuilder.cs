@@ -159,18 +159,21 @@ namespace PrintLayoutAddin.Core
         {
             int deleted = 0;
             var lm = LayoutManager.Current;
-            foreach (var name in layoutNames)
+            using (LayoutDstSyncWatcher.Suppress())
             {
-                if (string.IsNullOrWhiteSpace(name)) continue;
-                try
+                foreach (var name in layoutNames)
                 {
-                    if (lm.LayoutExists(name))
+                    if (string.IsNullOrWhiteSpace(name)) continue;
+                    try
                     {
-                        lm.DeleteLayout(name);
-                        deleted++;
+                        if (lm.LayoutExists(name))
+                        {
+                            lm.DeleteLayout(name);
+                            deleted++;
+                        }
                     }
+                    catch { }
                 }
-                catch { }
             }
             return deleted;
         }

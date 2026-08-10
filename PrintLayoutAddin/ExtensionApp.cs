@@ -12,10 +12,12 @@ namespace PrintLayoutAddin
         {
             try { RibbonBuilder.Build(); } catch { }
             try { ShortcutManager.Install(); } catch { }
+            try { LayoutDstSyncWatcher.Start(); } catch { }
         }
 
         public void Terminate()
         {
+            try { LayoutDstSyncWatcher.Stop(); } catch { }
             try { RibbonBuilder.Remove(); } catch { }
             try { ShortcutManager.Uninstall(); } catch { }
         }

@@ -159,6 +159,7 @@ namespace PrintLayoutAddin
             // if a relevant layer is locked (typically layer "0" or the VP layer from a previous run).
             var relockIds = UnlockAllLayers(db);
 
+            using (LayoutDstSyncWatcher.Suppress())
             try
             {
             foreach (var frame in frames)
@@ -241,6 +242,104 @@ namespace PrintLayoutAddin
             }
 
             ed.WriteMessage($"\nDone. Created {created} layouts, skipped {skipped}, errors {errors}.");
+
+            // Always report auto-DST status so we can see it in the command line / log file.
+            if (!Config.Instance.AutoSheetSetAfterLayout)
+            {
+                SheetSetAutoLog.Write(ed, doc?.Name,
+                    "skipped — config autoSheetSetAfterLayout=false");
+            }
+            else
+            {
+                TryAutoSheetSetAfterLayout(doc, ed, created, skipped, errors);
+            }
+        }
+
+        /// <summary>
+        /// After PLAYOUT: write/update default DST so Sheet Set fields on the title block
+        /// resolve (instead of ####) without opening PLSHEETSET.
+        /// </summary>
+        private static void TryAutoSheetSetAfterLayout(
+            Document doc, Editor ed, int created, int skipped, int errors)
+        {
+            string dwgPath = null;
+            try { dwgPath = doc?.Name; } catch { }
+
+            SheetSetAutoLog.Write(ed, dwgPath,
+                $"start after PLAYOUT (created={created}, skipped={skipped}, errors={errors})");
+
+            if (doc == null || ed == null)
+            {
+                SheetSetAutoLog.Write(ed, dwgPath, "abort — no active document");
+                return;
+            }
+
+            bool savedToDisk = false;
+            try { savedToDisk = !string.IsNullOrWhiteSpace(dwgPath) && File.Exists(dwgPath); }
+            catch { }
+            if (!savedToDisk)
+            {
+                SheetSetAutoLog.Write(ed, dwgPath,
+                    "abort — DWG not saved to disk. Save then run PLAYOUT / PLSHEETSET again.");
+                return;
+            }
+
+            try
+            {
+                var layouts = LayoutPlotter.GetPrintableLayouts(doc.Database);
+                var titled = SheetSetFolderImport.GetImportableLayoutNames(doc.Database);
+                layouts = (layouts ?? new System.Collections.Generic.List<PrintableLayout>())
+                    .Where(l => l != null && titled.Contains(l.Name))
+                    .ToList();
+                int layoutCount = layouts.Count;
+                SheetSetAutoLog.Write(ed, dwgPath,
+                    $"printable titled layouts={layoutCount}, dst={PublishPaths.DefaultDstPath(dwgPath)}");
+
+                if (layoutCount == 0)
+                {
+                    SheetSetAutoLog.Write(ed, dwgPath,
+                        "abort — no layouts with DrawingName (template/untitled excluded)");
+                    return;
+                }
+
+                var drawingNames = FrameScanner.CollectDrawingNamesByStt(doc.Database);
+                SheetSetAutoLog.Write(ed, dwgPath,
+                    $"drawing-name map entries={drawingNames?.Count ?? 0}");
+
+                SheetSetAutoLog.Write(ed, dwgPath, "calling CreateOrReplace (silent)…");
+                var sync = SheetSetService.TryAutoSyncFromLayouts(dwgPath, layouts, drawingNames);
+                SheetSetAutoLog.Write(ed, dwgPath,
+                    sync.Ok
+                        ? $"OK sheets={sync.SheetCount} file={sync.DstPath}"
+                        : $"FAIL {sync.Message}");
+
+                if (!sync.Ok) return;
+
+                try
+                {
+                    string note = SheetSetLauncher.ReloadForUser(sync.DstPath);
+                    SheetSetAutoLog.Write(ed, dwgPath, "SSM reload: " + note);
+                }
+                catch (System.Exception openEx)
+                {
+                    SheetSetAutoLog.Write(ed, dwgPath, "SSM reload error: " + openEx.Message);
+                }
+
+                try
+                {
+                    // Queue REGEN so Sheet Set fields re-evaluate after DST association.
+                    doc.SendStringToExecute("_.REGEN ", true, false, false);
+                    SheetSetAutoLog.Write(ed, dwgPath, "queued _.REGEN");
+                }
+                catch (System.Exception regenEx)
+                {
+                    SheetSetAutoLog.Write(ed, dwgPath, "REGEN error: " + regenEx.Message);
+                }
+            }
+            catch (System.Exception ex)
+            {
+                SheetSetAutoLog.Write(ed, dwgPath, "exception: " + ex.Message);
+            }
         }
 
         private static System.Collections.Generic.List<ObjectId> UnlockAllLayers(Database db)
@@ -404,6 +503,23 @@ namespace PrintLayoutAddin
             }
         }
 
+        /// <summary>
+        /// Internal: run DST layout-delete sync prompt off the Idle event
+        /// (MessageBox inside Idle re-enters and loops).
+        /// Keep attribute as a plain string literal — CadAddinManager/Mono.Cecil
+        /// can crash on CommandMethod(..., CommandFlags) when resolving duplicates.
+        /// </summary>
+        [CommandMethod("PLDSTLAYOUTSYNC")]
+        public void PlDstLayoutSync()
+        {
+            try { LayoutDstSyncWatcher.ProcessPendingFromCommand(); }
+            catch (System.Exception ex)
+            {
+                var ed = AcadApp.DocumentManager?.MdiActiveDocument?.Editor;
+                ed?.WriteMessage("\n" + LayoutDstSyncWatcher.SyncCommand + " failed: " + ex.Message);
+            }
+        }
+
         [CommandMethod("PLSHEETSET")]
         public void PlSheetSet()
         {
@@ -415,17 +531,26 @@ namespace PrintLayoutAddin
 
             try
             {
+                // Open whenever we are in paper space — do not require DrawingName layouts.
+                // Untitled / template tabs are only omitted from the dialog seed list.
+                int tileMode = 1;
+                try { tileMode = Convert.ToInt32(AcadApp.GetSystemVariable("TILEMODE")); }
+                catch { }
+                if (tileMode != 0)
+                {
+                    ed.WriteMessage("\nSwitch to a paper-space layout, then run PLSHEETSET.");
+                    return;
+                }
+
+                var titled = SheetSetFolderImport.GetImportableLayoutNames(doc.Database);
                 var layouts = LayoutPlotter.GetPrintableLayouts(doc.Database)
+                    .Where(x => x != null && !string.IsNullOrWhiteSpace(x.Name))
                     .Where(x => !string.Equals(
                         x.Name,
                         Config.Instance.TemplateLayout,
                         StringComparison.OrdinalIgnoreCase))
+                    .Where(x => titled.Contains(x.Name))
                     .ToList();
-                if (layouts.Count == 0)
-                {
-                    ed.WriteMessage("\nNo generated paper-space layouts were found.");
-                    return;
-                }
 
                 var drawingNames = FrameScanner.CollectDrawingNamesByStt(doc.Database);
                 var defaultDstPath = PublishPaths.DefaultDstPath(doc.Name);

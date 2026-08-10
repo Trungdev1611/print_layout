@@ -13,7 +13,7 @@ RebootMode=N
 InstallPrompt=%InstallPrompt%
 DisplayLicense=%DisplayLicense%
 FinishMessage=%FinishMessage%
-TargetName=%TargetName%
+TargetName=C:\code\printlayout-git\print_layout\installer\PrintLayoutAddinSetup.exe
 FriendlyName=%FriendlyName%
 AppLaunched=%AppLaunched%
 PostInstallCmd=%PostInstallCmd%
@@ -24,7 +24,7 @@ SourceFiles=SourceFiles
 InstallPrompt=
 DisplayLicense=
 FinishMessage=
-TargetName=C:\Users\chungnx\Downloads\tool-cad-printlayout\installer\PrintLayoutAddinSetup.exe
+TargetName=C:\code\printlayout-git\print_layout\installer\PrintLayoutAddinSetup.exe
 FriendlyName=PrintLayoutAddin Setup
 AppLaunched=cmd /c installer.cmd
 PostInstallCmd=<None>
@@ -33,7 +33,7 @@ UserQuietInstCmd=
 FILE0=installer.cmd
 FILE1=PrintLayoutAddin.bundle.zip
 [SourceFiles]
-SourceFiles0=C:\Users\chungnx\Downloads\tool-cad-printlayout\installer\iexpress\
+SourceFiles0=C:\code\printlayout-git\print_layout\installer\iexpress\
 [SourceFiles0]
 %FILE0%=
 %FILE1%=

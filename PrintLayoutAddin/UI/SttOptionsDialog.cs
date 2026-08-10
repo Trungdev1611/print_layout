@@ -74,21 +74,28 @@ namespace PrintLayoutAddin.UI
         private Label _validation;
         private Button _previewBtn, _okBtn, _cancelBtn;
         private CheckBox _allowMismatchChk;
+        private TableLayoutPanel _root;
+
+        private const int TabHeightSimple = 200;
+        private const int TabHeightAdvanced = 340;
+        private const int TabHeightImport = 190;
 
         public SttOptionsDialog(int expectedFrameCount)
         {
             _expectedCount = System.Math.Max(0, expectedFrameCount);
 
             Text = "Number frames";
-            Width = 880;
-            Height = 930;
+            Width = 860;
+            Height = 740;
             StartPosition = FormStartPosition.CenterParent;
             MinimizeBox = false;
             MaximizeBox = false;
-            MinimumSize = new Size(800, 820);
+            MinimumSize = new Size(780, 640);
+            BackColor = Color.FromArgb(243, 244, 246);
 
             BuildLayout();
             LoadFromRegistry();
+            AdjustTabAreaHeight();
 
             // Auto-preview once on open so the grid isn't empty.
             try { DoPreview(showErrors: false); } catch { /* best effort */ }
@@ -99,48 +106,51 @@ namespace PrintLayoutAddin.UI
         // =============================================================
         private void BuildLayout()
         {
-            var root = new TableLayoutPanel
+            _root = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
                 ColumnCount = 1,
-                RowCount = 6,
-                Padding = new Padding(8),
+                RowCount = 5,
+                Padding = new Padding(10),
+                BackColor = Color.FromArgb(243, 244, 246),
             };
-            root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 420)); // tabs
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 105)); // drawing names
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));  // preview row
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));  // validation
-            root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));  // grid
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));  // buttons
+            _root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            _root.RowStyles.Add(new RowStyle(SizeType.Absolute, TabHeightSimple)); // tabs
+            _root.RowStyles.Add(new RowStyle(SizeType.Absolute, 108)); // drawing names
+            _root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));  // preview + validation
+            _root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));  // grid
+            _root.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));  // buttons
 
             _tabs = new TabControl { Dock = DockStyle.Fill };
             _tabs.Controls.Add(BuildSimpleTab());
             _tabs.Controls.Add(BuildAdvancedTab());
             _tabs.Controls.Add(BuildImportTab());
-            root.Controls.Add(_tabs, 0, 0);
-            root.Controls.Add(BuildDrawingNamePanel(), 0, 1);
+            _tabs.SelectedIndexChanged += (s, e) => AdjustTabAreaHeight();
+            var tabsCard = WrapCard(_tabs);
+            tabsCard.Margin = new Padding(0, 0, 0, 4);
+            _root.Controls.Add(tabsCard, 0, 0);
+            _root.Controls.Add(BuildDrawingNamePanel(), 0, 1);
 
-            // Preview row
+            // Preview + validation on one row (avoids vertical overlap).
             var previewPanel = new FlowLayoutPanel
             {
                 Dock = DockStyle.Fill,
                 FlowDirection = FlowDirection.LeftToRight,
                 WrapContents = false,
-                Padding = new Padding(0, 6, 0, 0),
+                Padding = new Padding(4, 4, 0, 0),
             };
             _previewBtn = new Button
             {
                 Text = "Preview",
                 Width = 110,
-                Height = 30,
+                Height = 28,
                 Margin = new Padding(0, 0, 10, 0),
             };
             _previewBtn.Click += (s, e) => DoPreview(showErrors: true);
             _counter = new Label
             {
                 AutoSize = true,
-                Margin = new Padding(10, 8, 0, 0),
+                Margin = new Padding(6, 6, 0, 0),
                 Text = _expectedCount > 0
                     ? $"Expected frames: {_expectedCount}"
                     : "Expected frames: unknown"
@@ -149,23 +159,20 @@ namespace PrintLayoutAddin.UI
             {
                 Text = "Allow count mismatch",
                 AutoSize = true,
-                Margin = new Padding(20, 8, 0, 0),
+                Margin = new Padding(16, 6, 0, 0),
+            };
+            _validation = new Label
+            {
+                AutoSize = true,
+                Margin = new Padding(20, 6, 0, 0),
+                ForeColor = Color.DarkRed,
+                Text = "",
             };
             previewPanel.Controls.Add(_previewBtn);
             previewPanel.Controls.Add(_counter);
             previewPanel.Controls.Add(_allowMismatchChk);
-            root.Controls.Add(previewPanel, 0, 2);
-
-            // Validation label
-            _validation = new Label
-            {
-                Dock = DockStyle.Fill,
-                AutoEllipsis = false,
-                ForeColor = Color.DarkRed,
-                Padding = new Padding(2),
-                Text = "",
-            };
-            root.Controls.Add(_validation, 0, 3);
+            previewPanel.Controls.Add(_validation);
+            _root.Controls.Add(previewPanel, 0, 2);
 
             // Grid
             _grid = new DataGridView
@@ -178,6 +185,8 @@ namespace PrintLayoutAddin.UI
                 MultiSelect = false,
                 AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
                 RowHeadersVisible = false,
+                BackgroundColor = Color.White,
+                BorderStyle = BorderStyle.None,
             };
             _grid.Columns.Add(new DataGridViewTextBoxColumn
             {
@@ -207,25 +216,63 @@ namespace PrintLayoutAddin.UI
                 AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill,
                 FillWeight = 25,
             });
-            root.Controls.Add(_grid, 0, 4);
+            _root.Controls.Add(WrapCard(_grid, "Preview"), 0, 3);
 
             // Buttons
             var btnPanel = new FlowLayoutPanel
             {
                 Dock = DockStyle.Fill,
                 FlowDirection = FlowDirection.RightToLeft,
-                Padding = new Padding(0, 8, 0, 0),
+                Padding = new Padding(0, 6, 0, 0),
             };
             _cancelBtn = new Button { Text = "Cancel", Width = 100, Height = 30, DialogResult = DialogResult.Cancel };
             _okBtn = new Button { Text = "OK", Width = 100, Height = 30 };
             _okBtn.Click += (s, e) => Accept();
             btnPanel.Controls.Add(_cancelBtn);
             btnPanel.Controls.Add(_okBtn);
-            root.Controls.Add(btnPanel, 0, 5);
+            _root.Controls.Add(btnPanel, 0, 4);
 
-            Controls.Add(root);
+            Controls.Add(_root);
             AcceptButton = _okBtn;
             CancelButton = _cancelBtn;
+        }
+
+        private void AdjustTabAreaHeight()
+        {
+            if (_root == null || _tabs == null) return;
+            int h = TabHeightSimple;
+            if (_tabs.SelectedIndex == 1) h = TabHeightAdvanced;
+            else if (_tabs.SelectedIndex == 2) h = TabHeightImport;
+            _root.RowStyles[0].Height = h;
+        }
+
+        /// <summary>Light card: white panel + border. Optional title via GroupBox.</summary>
+        private static Control WrapCard(Control inner, string title = null)
+        {
+            if (!string.IsNullOrEmpty(title))
+            {
+                var box = new GroupBox
+                {
+                    Text = title,
+                    Dock = DockStyle.Fill,
+                    Padding = new Padding(8, 6, 8, 8),
+                    BackColor = Color.White,
+                };
+                inner.Dock = DockStyle.Fill;
+                box.Controls.Add(inner);
+                return box;
+            }
+
+            var panel = new Panel
+            {
+                Dock = DockStyle.Fill,
+                Padding = new Padding(6),
+                BackColor = Color.White,
+                BorderStyle = BorderStyle.FixedSingle,
+            };
+            inner.Dock = DockStyle.Fill;
+            panel.Controls.Add(inner);
+            return panel;
         }
 
         private Control BuildDrawingNamePanel()
@@ -234,22 +281,23 @@ namespace PrintLayoutAddin.UI
             {
                 Text = $"Drawing name attribute: {Config.Instance.DrawingNameTag}",
                 Dock = DockStyle.Fill,
-                Padding = new Padding(8),
+                Padding = new Padding(8, 4, 8, 6),
+                BackColor = Color.White,
+                Margin = new Padding(0, 12, 0, 0),
             };
             var panel = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
-                ColumnCount = 8,
+                ColumnCount = 7,
                 RowCount = 2,
             };
             panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 165));
             panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 55));
-            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 35));
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40));
             panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 45));
-            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 20));
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 30));
             panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 55));
-            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 20));
-            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 30));
             panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
             panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
 
@@ -273,24 +321,12 @@ namespace PrintLayoutAddin.UI
             panel.Controls.Add(_nStart, 4, 0);
             panel.Controls.Add(new Label { Text = "Step", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 5, 0);
             panel.Controls.Add(_nStep, 6, 0);
-            panel.Controls.Add(new Label
-            {
-                Text = "Import mode uses the DrawingName column when present.",
-                Dock = DockStyle.Fill,
-                ForeColor = Color.Gray,
-            }, 7, 0);
             panel.Controls.Add(new Label { Text = "Suffix", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 1, 1);
             panel.Controls.Add(_nSuffix, 2, 1);
             panel.Controls.Add(new Label { Text = "Pad", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 3, 1);
             panel.Controls.Add(_nPadding, 4, 1);
             panel.Controls.Add(new Label { Text = "Skip", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 5, 1);
             panel.Controls.Add(_nSkip, 6, 1);
-            panel.Controls.Add(new Label
-            {
-                Text = "Blank names are skipped; STT is still assigned.",
-                Dock = DockStyle.Fill,
-                ForeColor = Color.Gray,
-            }, 7, 1);
 
             group.Controls.Add(panel);
             return group;
@@ -312,7 +348,7 @@ namespace PrintLayoutAddin.UI
             tbl.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
             for (int r = 0; r < 4; r++)
                 tbl.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
-            tbl.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            tbl.RowStyles.Add(new RowStyle(SizeType.Absolute, 48)); // hint — no stretch empty space
 
             _sPrefix = new TextBox { Dock = DockStyle.Fill, Margin = new Padding(3, 6, 3, 3) };
             _sSuffix = new TextBox { Dock = DockStyle.Fill, Margin = new Padding(3, 6, 3, 3) };
@@ -555,10 +591,10 @@ namespace PrintLayoutAddin.UI
                 Padding = new Padding(10),
             };
             panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 80));
-            panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
-            panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
-            panel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 72));
+            panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+            panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+            panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 1)); // no stretch gap
 
             panel.Controls.Add(new Label
             {

@@ -4,5 +4,8 @@
   "vpLayer": "360D-Mview",
   "xdataAppName": "PLADDIN_STT",
   "templateLayout": "Layout1",
-  "sheetSetFolderName": "sheetset_manager"
+  "sheetSetFolderName": "sheetset_manager",
+  "revTableLayer": "TITLE_BLOCK_REV_TABLE",
+  "revTableDataRows": 4,
+  "autoSheetSetAfterLayout": true
 }

@@ -68,7 +68,14 @@ Step "Compressing bundle -> PrintLayoutAddin.bundle.zip"
 if (Test-Path $BundleZip) { Remove-Item -LiteralPath $BundleZip -Force }
 Compress-Archive -Path $Bundle -DestinationPath $BundleZip -CompressionLevel Optimal -Force
 
-# --- 4. Run IExpress to produce the self-extracting .exe ---------------------
+# --- 4. Patch SED paths for this machine, then run IExpress ------------------
+Step "Patching SED TargetName / SourceFiles0 for this repo"
+if (-not (Test-Path $Sed)) { throw "Missing SED: $Sed" }
+$sedText = Get-Content -LiteralPath $Sed -Raw
+$sedText = [regex]::Replace($sedText, '(?m)^TargetName=.*$', "TargetName=$OutputExe")
+$sedText = [regex]::Replace($sedText, '(?m)^SourceFiles0=.*$', ("SourceFiles0=" + $IExpressDir.TrimEnd('\') + '\'))
+Set-Content -LiteralPath $Sed -Value $sedText -NoNewline -Encoding ASCII
+
 Step "Running IExpress"
 $iexpress = Join-Path $env:WINDIR "System32\iexpress.exe"
 if (-not (Test-Path $iexpress)) { $iexpress = Join-Path $env:WINDIR "SysWOW64\iexpress.exe" }
