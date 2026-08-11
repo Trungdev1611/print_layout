@@ -24,10 +24,21 @@ namespace PrintLayoutAddin.Core
         public string Name { get; set; }
         public int Count { get; set; }
         public bool IsXref { get; set; }
+        /// <summary>Sample width from first measured instance (drawing units).</summary>
+        public double Width { get; set; }
+        /// <summary>Sample height from first measured instance (drawing units).</summary>
+        public double Height { get; set; }
+        /// <summary>Deepest nesting level where this name was seen (1 = direct child).</summary>
+        public int Depth { get; set; }
 
         public override string ToString()
         {
-            return $"{Name}  ({Count} instance{(Count == 1 ? "" : "s")}{(IsXref ? ", XREF" : "")})";
+            var size = (Width > 0 && Height > 0)
+                ? $", {Width:0.#}×{Height:0.#}"
+                : "";
+            var depth = Depth > 0 ? $", depth {Depth}" : "";
+            var xref = IsXref ? ", XREF" : "";
+            return $"{Name}  ({Count} instance{(Count == 1 ? "" : "s")}{size}{depth}{xref})";
         }
     }
 

@@ -116,6 +116,20 @@ namespace PrintLayoutAddin.UI
                     .SendStringToExecute("_PLSHEETSET ", true, false, true))
             };
 
+            var btnFrameSetup = new RibbonButton
+            {
+                Text = "Title Block\nSetup",
+                ShowText = true,
+                ShowImage = true,
+                LargeImage = DrawFrameSetupIcon(32),
+                Image = DrawFrameSetupIcon(16),
+                Size = RibbonItemSize.Large,
+                Orientation = Orientation.Vertical,
+                Description = "Place Sheet Set fields and revision table on a title block (PLFRAME_SETUP).",
+                CommandHandler = new RelayCommand(() => AcadApp.DocumentManager.MdiActiveDocument?
+                    .SendStringToExecute("_PLFRAME_SETUP ", true, false, true))
+            };
+
             var btnClean = new RibbonButton
             {
                 Text = "Cleanup\nFrames",
@@ -176,6 +190,7 @@ namespace PrintLayoutAddin.UI
             panelSource.Items.Add(btnStt);
             panelSource.Items.Add(btnLayout);
             panelSource.Items.Add(btnSheetSet);
+            panelSource.Items.Add(btnFrameSetup);
             panelSource.Items.Add(btnPrint);
             panelSource.Items.Add(btnClean);
             panelSource.Items.Add(btnReset);
@@ -397,6 +412,72 @@ namespace PrintLayoutAddin.UI
                         new PointF(size * 0.43f, size * 0.72f),
                         new PointF(size * 0.75f, size * 0.38f),
                     });
+                }
+            });
+        }
+
+        private static BitmapSource DrawFrameSetupIcon(int size)
+        {
+            return BuildBitmap(size, g =>
+            {
+                g.Clear(Color.Transparent);
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+
+                var blue = Color.FromArgb(255, 55, 110, 180);
+                var orange = Color.FromArgb(255, 200, 100, 30);
+                float pad = size * 0.10f;
+                float w = size - pad * 2;
+                float h = size - pad * 2;
+
+                using (var paper = new SolidBrush(Color.White))
+                using (var paperPen = new Pen(Color.FromArgb(255, 60, 60, 60), Math.Max(1f, size / 16f)))
+                {
+                    g.FillRectangle(paper, pad, pad, w, h);
+                    g.DrawRectangle(paperPen, pad, pad, w, h);
+                }
+
+                // Title-block strip at bottom with field slots
+                float stripH = size * 0.28f;
+                float stripY = size - pad - stripH;
+                using (var strip = new SolidBrush(Color.FromArgb(40, 55, 110, 180)))
+                using (var stripPen = new Pen(blue, Math.Max(1f, size / 18f)))
+                {
+                    g.FillRectangle(strip, pad, stripY, w, stripH);
+                    g.DrawRectangle(stripPen, pad, stripY, w, stripH);
+                }
+
+                float slotH = size * 0.08f;
+                float slotY = stripY + size * 0.10f;
+                float slotW = size * 0.22f;
+                float gap = size * 0.04f;
+                float sx = pad + size * 0.06f;
+                using (var slot = new SolidBrush(Color.FromArgb(220, 255, 255, 255)))
+                using (var slotPen = new Pen(orange, Math.Max(1f, size / 22f)))
+                {
+                    for (int i = 0; i < 3; i++)
+                    {
+                        float x = sx + i * (slotW + gap);
+                        g.FillRectangle(slot, x, slotY, slotW, slotH);
+                        g.DrawRectangle(slotPen, x, slotY, slotW, slotH);
+                    }
+                }
+
+                // Small gear hint (setup) at top-right of sheet
+                float cx = size * 0.72f, cy = size * 0.32f, r = size * 0.14f;
+                using (var gearPen = new Pen(blue, Math.Max(1.5f, size / 14f)))
+                {
+                    gearPen.StartCap = LineCap.Round;
+                    gearPen.EndCap = LineCap.Round;
+                    g.DrawEllipse(gearPen, cx - r * 0.55f, cy - r * 0.55f, r * 1.1f, r * 1.1f);
+                    for (int i = 0; i < 4; i++)
+                    {
+                        double a = i * Math.PI / 2.0;
+                        float x1 = cx + (float)(Math.Cos(a) * r * 0.55f);
+                        float y1 = cy + (float)(Math.Sin(a) * r * 0.55f);
+                        float x2 = cx + (float)(Math.Cos(a) * r);
+                        float y2 = cy + (float)(Math.Sin(a) * r);
+                        g.DrawLine(gearPen, x1, y1, x2, y2);
+                    }
                 }
             });
         }

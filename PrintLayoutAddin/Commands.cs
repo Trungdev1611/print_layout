@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -18,6 +19,7 @@ namespace PrintLayoutAddin
     public class Commands
     {
         private const string RegKey = @"Software\PrintLayoutAddin";
+        private static TitleBlockSetupPalette _titleBlockSetupPalette;
 
         [CommandMethod("PLSTT")]
         public void PlStt()
@@ -615,84 +617,61 @@ namespace PrintLayoutAddin
                 return;
             }
 
-            // 1. Pick a block in ModelSpace. Two flows:
-            //    a) parent xref/block containing nested frames (e.g. "Ten Ham.MB_..." with "Z1.Khung TB" inside)
-            //    b) the frame block itself, sitting directly in ModelSpace
-            ed.WriteMessage("\nPLAUTO — wrap a frame block with a native PL_ block. The frame can be nested in an xref/block, or sit directly in ModelSpace.");
-            ed.WriteMessage("\nStep 1/2: pick a block in ModelSpace.");
-            var parent = PickBlock(db);
-            if (parent == null) return;
-
-            // 2. List block names nested inside that parent's BTR. Always offer "(use this block directly)"
-            //    as a synthetic first option so the user can wrap the picked block itself.
-            var nestedList = NestedFrameScanner.ListNestedBlocks(db, parent.Name);
-
-            var directSentinel = new BlockChoice
+            // Single-popup flow: auto-scan all ModelSpace xrefs/blocks (recursive),
+            // user picks one frame name, then insert PL_ wrappers on every hit.
+            ed.WriteMessage("\nPLAUTO — scanning ModelSpace for nested frames (all xrefs, any depth)...");
+            List<BlockChoice> candidates;
+            try
             {
-                Name = $"(use '{parent.Name}' directly — wrap it as PL_)",
-                Count = parent.Count,
-                IsXref = parent.IsXref,
-            };
-
-            BlockChoice frameChoice;
-            bool directMode;
-
-            if (nestedList.Count == 0)
-            {
-                // No nested INSERTs — direct mode is the only option, skip the picker.
-                ed.WriteMessage($"\nBlock '{parent.Name}' has no nested INSERTs. Wrapping it directly.");
-                frameChoice = directSentinel;
-                directMode = true;
+                candidates = NestedFrameScanner.ListFramesInModelSpace(db);
             }
-            else
+            catch (System.Exception ex)
             {
-                string lastNested = null;
-                try
-                {
-                    using (var k = Registry.CurrentUser.OpenSubKey(RegKey))
-                        lastNested = k?.GetValue("LastNestedFrame") as string;
-                }
-                catch { }
-
-                var picker = new System.Collections.Generic.List<BlockChoice> { directSentinel };
-                picker.AddRange(nestedList);
-
-                ed.WriteMessage("\nStep 2/2: pick the nested frame block, or '(use ... directly)' to wrap the parent itself.");
-                using (var dlg = new BlockPickerDialog(picker, lastNested))
-                {
-                    dlg.Text = "Pick frame block (or 'use directly')";
-                    if (AcadApp.ShowModalDialog(dlg) != DialogResult.OK) return;
-                    frameChoice = dlg.Selected;
-                }
-                directMode = ReferenceEquals(frameChoice, directSentinel);
-
-                if (!directMode)
-                {
-                    try
-                    {
-                        using (var k = Registry.CurrentUser.CreateSubKey(RegKey))
-                            k?.SetValue("LastNestedFrame", frameChoice.Name);
-                    }
-                    catch { }
-                }
-            }
-
-            // 3. Collect frame instances. Direct = MS-level BRs of parent.Name.
-            //    Nested = nested BRs of frameChoice.Name inside each parent BR.
-            string sourceBlockName = directMode ? parent.Name : frameChoice.Name;
-            var hits = directMode
-                ? NestedFrameScanner.CollectDirectHits(db, parent.Name)
-                : NestedFrameScanner.CollectHits(db, parent.Name, frameChoice.Name);
-            if (hits.Count == 0)
-            {
-                ed.WriteMessage(directMode
-                    ? $"\nFound 0 instances of '{parent.Name}' in ModelSpace."
-                    : $"\nFound 0 instances of '{frameChoice.Name}' inside '{parent.Name}'.");
+                ed.WriteMessage("\nPLAUTO scan failed: " + ex.Message);
                 return;
             }
 
-            // 4. Decide block size from the first hit (all copies of the same source block share the same BTR,
-            //    so their LocalWidth/Height are identical).
+            if (candidates == null || candidates.Count == 0)
+            {
+                ed.WriteMessage(
+                    "\nNo frame candidates found under ModelSpace "
+                    + "(after skipping PL_ / A$ / * and tiny blocks).");
+                return;
+            }
+
+            string lastNested = null;
+            try
+            {
+                using (var k = Registry.CurrentUser.OpenSubKey(RegKey))
+                    lastNested = k?.GetValue("LastNestedFrame") as string;
+            }
+            catch { }
+
+            ed.WriteMessage($"\nFound {candidates.Count} candidate block name(s). Select the frame to wrap.");
+            BlockChoice frameChoice;
+            using (var dlg = new BlockPickerDialog(candidates, lastNested, "Select frame to wrap"))
+            {
+                if (AcadApp.ShowModalDialog(dlg) != DialogResult.OK) return;
+                frameChoice = dlg.Selected;
+            }
+            if (frameChoice == null || string.IsNullOrWhiteSpace(frameChoice.Name))
+                return;
+
+            try
+            {
+                using (var k = Registry.CurrentUser.CreateSubKey(RegKey))
+                    k?.SetValue("LastNestedFrame", frameChoice.Name);
+            }
+            catch { }
+
+            string sourceBlockName = frameChoice.Name;
+            var hits = NestedFrameScanner.CollectHitsInModelSpace(db, sourceBlockName);
+            if (hits.Count == 0)
+            {
+                ed.WriteMessage($"\nFound 0 instances of '{sourceBlockName}' under ModelSpace.");
+                return;
+            }
+
             double w = hits[0].LocalWidth;
             double h = hits[0].LocalHeight;
             if (w <= 0 || h <= 0)
@@ -701,7 +680,6 @@ namespace PrintLayoutAddin
                 return;
             }
 
-            // 5. Build a native block name safe to reuse; default PL_<sourceName>.
             string safeNested = SymbolUtilityServices.RepairSymbolName(sourceBlockName, false);
             string nativeBlockName = "PL_" + safeNested;
 
@@ -719,7 +697,6 @@ namespace PrintLayoutAddin
                     $"\nCreated native block '{nativeBlockName}' ({w:F1} x {h:F1}) and inserted {inserted} frame(s) in ModelSpace.");
                 ed.WriteMessage("\nNow run PLSTT to number them, then PLAYOUT to generate layouts.");
 
-                // Remember the native block as the default for subsequent PLSTT/PLAYOUT.
                 try
                 {
                     using (var k = Registry.CurrentUser.CreateSubKey(RegKey))
@@ -1036,6 +1013,33 @@ namespace PrintLayoutAddin
             catch (System.Exception ex)
             {
                 ed.WriteMessage("\nCould not open the output: " + ex.Message);
+            }
+        }
+
+        [CommandMethod("PLFRAME_SETUP")]
+        public void PlFrameSetup()
+        {
+            var doc = AcadApp.DocumentManager.MdiActiveDocument;
+            if (doc == null) return;
+            var ed = doc.Editor;
+            if (!LicenseGate.Allow(ed)) return;
+
+            ShowTitleBlockSetupPalette();
+        }
+
+        private static void ShowTitleBlockSetupPalette()
+        {
+            if (_titleBlockSetupPalette == null || _titleBlockSetupPalette.IsDisposed)
+            {
+                _titleBlockSetupPalette = new TitleBlockSetupPalette();
+                AcadApp.ShowModelessDialog(_titleBlockSetupPalette);
+            }
+            else
+            {
+                _titleBlockSetupPalette.RefreshContext();
+                if (!_titleBlockSetupPalette.Visible)
+                    _titleBlockSetupPalette.Show();
+                _titleBlockSetupPalette.BringToFront();
             }
         }
 
