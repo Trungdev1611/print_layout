@@ -1361,8 +1361,18 @@ namespace PrintLayoutAddin.UI
             }
             catch (Exception ex)
             {
+                SheetSetAutoLog.WriteException(
+                    null, _dwgPath, "PLSHEETSET", "Create/Update DST failed", ex, _fixedDstPath);
                 SetStatus(ex.Message, true);
-                MessageBox.Show(this, ex.Message, "Create Sheet Set", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                string logPath = SheetSetAutoLog.GetLogFilePath(_dwgPath, _fixedDstPath);
+                MessageBox.Show(
+                    this,
+                    ex.Message
+                    + "\n\nFull details written to:\n"
+                    + logPath,
+                    "Create Sheet Set",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error);
             }
             finally
             {

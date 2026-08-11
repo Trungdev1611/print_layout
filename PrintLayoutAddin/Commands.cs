@@ -365,7 +365,10 @@ namespace PrintLayoutAddin
                     + "1. Close the sheet set in Sheet Set Manager (dropdown → Close),\n"
                     + "   or restart AutoCAD if it stays locked.\n"
                     + "2. Run PLSHEETSET (Create / Update) manually.\n"
-                    + "3. REGEN the layout.",
+                    + "3. REGEN the layout.\n\n"
+                    + "Details: "
+                    + SheetSetAutoLog.GetLogFilePath(
+                        AcadApp.DocumentManager.MdiActiveDocument?.Name),
                     "Print Layout — Sheet Set",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Warning);

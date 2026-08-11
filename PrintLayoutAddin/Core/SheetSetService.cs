@@ -143,7 +143,16 @@ namespace PrintLayoutAddin.Core
 
             // Rebuild from the dialog table (subset headers + sheet order).
             // Close SSM's hold on the file first so overwrite can succeed.
-            RebuildFromTable(dstPath, sheetSetName, ordered);
+            try
+            {
+                RebuildFromTable(dstPath, sheetSetName, ordered);
+            }
+            catch (Exception ex)
+            {
+                SheetSetAutoLog.WriteException(
+                    null, null, "PLSHEETSET", "CreateOrReplace failed", ex, dstPath);
+                throw;
+            }
         }
 
         public class AutoSyncResult
@@ -421,7 +430,7 @@ namespace PrintLayoutAddin.Core
             }
             catch (COMException ex)
             {
-                result.Message = WrapCom(ex).Message;
+                result.Message = WrapCom(ex, "ImportFolderTree", dstPath).Message;
                 return result;
             }
             catch (Exception ex)
@@ -573,7 +582,7 @@ namespace PrintLayoutAddin.Core
             }
             catch (COMException ex)
             {
-                result.Message = WrapCom(ex).Message;
+                result.Message = WrapCom(ex, "ImportFolderTree", dstPath).Message;
                 return result;
             }
             catch (Exception ex)
@@ -624,22 +633,38 @@ namespace PrintLayoutAddin.Core
                 dir ?? Path.GetTempPath(),
                 Path.GetFileNameWithoutExtension(dstPath) + "." + Guid.NewGuid().ToString("N") + ".dst");
 
+            SheetSetAutoLog.WriteStep(null, null, dstPath, "RebuildFromTable start",
+                $"targetExists={File.Exists(dstPath)} target$={File.Exists(dstPath + "$")} "
+                + $"entries={ordered?.Count ?? 0} temp={tempPath}");
+
             try
             {
                 WriteNewDstFile(tempPath, sheetSetName, ordered);
+                SheetSetAutoLog.WriteStep(null, null, dstPath, "WriteNewDstFile OK",
+                    $"tempExists={File.Exists(tempPath)}");
 
                 // Close anything holding the target, then replace atomically-ish.
+                SheetSetAutoLog.WriteStep(null, null, dstPath, "ForceCloseForRewrite", null);
                 SheetSetLauncher.ForceCloseForRewrite(dstPath);
                 if (File.Exists(dstPath))
                 {
-                    throw new InvalidOperationException(
+                    var locked = new InvalidOperationException(
                         "Could not replace the DST — it is still locked by Sheet Set Manager.\n\n"
                         + "Close the sheet set in SSM (dropdown → Close), then try again.\n\n"
                         + dstPath);
+                    SheetSetAutoLog.WriteException(
+                        null, null, "PLSHEETSET", "DST still on disk after ForceClose", locked, dstPath);
+                    throw locked;
                 }
 
+                SheetSetAutoLog.WriteStep(null, null, dstPath, "File.Move temp→target", null);
                 File.Move(tempPath, dstPath);
                 tempPath = null; // moved
+                SheetSetAutoLog.WriteStep(null, null, dstPath, "RebuildFromTable OK", null);
+            }
+            catch (COMException ex)
+            {
+                throw WrapCom(ex, "RebuildFromTable", dstPath);
             }
             finally
             {
@@ -665,6 +690,8 @@ namespace PrintLayoutAddin.Core
             try
             {
                 manager = (IAcSmSheetSetMgr)CreateComObject("AcSmSheetSetMgr");
+                SheetSetAutoLog.WriteStep(null, null, dstPath, "CreateDatabase",
+                    $"path={dstPath} exists={File.Exists(dstPath)}");
                 database = manager.CreateDatabase(dstPath, "", true);
                 if (database == null)
                     throw new InvalidOperationException("AutoCAD did not create the sheet set database.");
@@ -777,7 +804,7 @@ namespace PrintLayoutAddin.Core
             }
             catch (COMException ex)
             {
-                throw WrapCom(ex);
+                throw WrapCom(ex, "CreateDatabase", dstPath);
             }
             finally
             {
@@ -941,7 +968,7 @@ namespace PrintLayoutAddin.Core
             }
             catch (COMException ex)
             {
-                message = WrapCom(ex).Message;
+                message = WrapCom(ex, "TryRemoveSheetsByLayoutNames", dstPath).Message;
                 return false;
             }
             catch (Exception ex)
@@ -1833,8 +1860,11 @@ namespace PrintLayoutAddin.Core
                 + "Rebuild with AutoCAD installed, or pass /p:AcSmInteropPath=... to the build.");
         }
 
-        private static InvalidOperationException WrapCom(COMException ex)
+        private static InvalidOperationException WrapCom(
+            COMException ex, string operation = null, string dstPath = null, string dwgPath = null)
         {
+            SheetSetAutoLog.WriteComFailure(dwgPath, dstPath, operation ?? "AcSm COM", ex);
+
             string msg = ex.Message ?? "";
             string hint;
             if (msg.IndexOf("Class not registered", StringComparison.OrdinalIgnoreCase) >= 0)
@@ -1844,16 +1874,17 @@ namespace PrintLayoutAddin.Core
             }
             else if (unchecked((uint)ex.ErrorCode) == 0x80040211)
             {
-                hint = " (HRESULT 0x80040211 — often DST locked in Sheet Set Manager. "
-                    + "Close the sheet set there, then Create / Update again.)";
+                hint = " (HRESULT 0x80040211 — AcSm rejected the call; may be DST lock, zombie AcSm state, "
+                    + "or path issue — not always a visible .dst file. See pl_sheetset_auto.log.)";
             }
             else
             {
                 hint = "";
             }
 
+            string op = string.IsNullOrWhiteSpace(operation) ? "" : " [" + operation + "]";
             return new InvalidOperationException(
-                "AutoCAD Sheet Set API failed." + hint + " " + msg, ex);
+                "AutoCAD Sheet Set API failed" + op + "." + hint + " " + msg, ex);
         }
     }
 }
