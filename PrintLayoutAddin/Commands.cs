@@ -315,7 +315,11 @@ namespace PrintLayoutAddin
                         ? $"OK sheets={sync.SheetCount} file={sync.DstPath}"
                         : $"FAIL {sync.Message}");
 
-                if (!sync.Ok) return;
+                if (!sync.Ok)
+                {
+                    NotifyAutoSheetSetFailed(sync.Message);
+                    return;
+                }
 
                 try
                 {
@@ -341,7 +345,32 @@ namespace PrintLayoutAddin
             catch (System.Exception ex)
             {
                 SheetSetAutoLog.Write(ed, dwgPath, "exception: " + ex.Message);
+                NotifyAutoSheetSetFailed(ex.Message);
             }
+        }
+
+        /// <summary>
+        /// Layouts from PLAYOUT are fine; only the silent DST sync failed.
+        /// Prompt the user to retry PLSHEETSET or restart AutoCAD (DST lock).
+        /// </summary>
+        private static void NotifyAutoSheetSetFailed(string detail)
+        {
+            string reason = string.IsNullOrWhiteSpace(detail) ? "(unknown error)" : detail.Trim();
+            try
+            {
+                MessageBox.Show(
+                    "Build Layouts finished, but auto Sheet Set (DST) failed.\n\n"
+                    + reason
+                    + "\n\nLayouts are OK. To fix title-block fields (####):\n"
+                    + "1. Close the sheet set in Sheet Set Manager (dropdown → Close),\n"
+                    + "   or restart AutoCAD if it stays locked.\n"
+                    + "2. Run PLSHEETSET (Create / Update) manually.\n"
+                    + "3. REGEN the layout.",
+                    "Print Layout — Sheet Set",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+            }
+            catch { }
         }
 
         private static System.Collections.Generic.List<ObjectId> UnlockAllLayers(Database db)
