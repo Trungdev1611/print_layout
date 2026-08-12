@@ -17,15 +17,25 @@ namespace PrintLayoutAddin.Core
         public static void Write(Editor ed, string dwgPath, string message) =>
             WriteTagged(ed, dwgPath, null, message);
 
-        public static void WriteTagged(Editor ed, string dwgPath, string tag, string message)
+        /// <summary>
+        /// Pass <paramref name="dstPath"/> whenever the caller has no dwgPath: without it the
+        /// line lands in the fallback log under Documents instead of the one next to the .dst,
+        /// which is how a stack trace naming the real failing AcSm call went unnoticed.
+        /// </summary>
+        public static void WriteTagged(
+            Editor ed, string dwgPath, string tag, string message, string dstPath = null)
         {
             string prefix = string.IsNullOrWhiteSpace(tag) ? "[PLSHEETSET]" : "[" + tag + "]";
             string msg = message ?? "";
             try { ed?.WriteMessage("\n" + prefix + " " + msg); }
             catch { }
 
-            AppendFile(dwgPath, null, prefix + " " + msg);
+            AppendFile(dwgPath, dstPath, prefix + " " + msg);
         }
+
+        private static void WriteTaggedDst(
+            Editor ed, string dwgPath, string tag, string dstPath, string message) =>
+            WriteTagged(ed, dwgPath, tag, message, dstPath);
 
         /// <summary>Log a pipeline step with optional .dst path context (file existence, temp path, etc.).</summary>
         public static void WriteStep(Editor ed, string dwgPath, string dstPath, string step, string detail = null)
@@ -35,7 +45,7 @@ namespace PrintLayoutAddin.Core
                 sb.Append(" | dst=").Append(dstPath);
             if (!string.IsNullOrWhiteSpace(detail))
                 sb.Append(" | ").Append(detail);
-            WriteTagged(ed, dwgPath, "PLSHEETSET-STEP", sb.ToString());
+            WriteTagged(ed, dwgPath, "PLSHEETSET-STEP", sb.ToString(), dstPath);
         }
 
         public static void WriteException(
@@ -43,24 +53,24 @@ namespace PrintLayoutAddin.Core
         {
             if (ex == null)
             {
-                WriteTagged(ed, dwgPath, tag, context ?? "exception: (null)");
+                WriteTaggedDst(ed, dwgPath, tag, dstPath, context ?? "exception: (null)");
                 return;
             }
 
-            WriteTagged(ed, dwgPath, tag, context ?? "exception");
-            WriteTagged(ed, dwgPath, tag, "  Type: " + ex.GetType().FullName);
-            WriteTagged(ed, dwgPath, tag, "  Message: " + (ex.Message ?? ""));
+            WriteTaggedDst(ed, dwgPath, tag, dstPath, context ?? "exception");
+            WriteTaggedDst(ed, dwgPath, tag, dstPath, "  Type: " + ex.GetType().FullName);
+            WriteTaggedDst(ed, dwgPath, tag, dstPath, "  Message: " + (ex.Message ?? ""));
 
             if (ex is COMException com)
             {
-                WriteTagged(ed, dwgPath, tag,
+                WriteTaggedDst(ed, dwgPath, tag, dstPath,
                     "  COM ErrorCode: 0x" + unchecked((uint)com.ErrorCode).ToString("X8")
                     + "  HResult: 0x" + unchecked((uint)com.HResult).ToString("X8"));
             }
 
             if (!string.IsNullOrWhiteSpace(dstPath))
             {
-                WriteTagged(ed, dwgPath, tag,
+                WriteTaggedDst(ed, dwgPath, tag, dstPath,
                     "  dst exists=" + File.Exists(dstPath)
                     + "  dst$ exists=" + File.Exists(dstPath + "$"));
             }
@@ -68,10 +78,10 @@ namespace PrintLayoutAddin.Core
             var inner = ex.InnerException;
             while (inner != null)
             {
-                WriteTagged(ed, dwgPath, tag, "  Inner: " + inner.GetType().Name + ": " + inner.Message);
+                WriteTaggedDst(ed, dwgPath, tag, dstPath, "  Inner: " + inner.GetType().Name + ": " + inner.Message);
                 if (inner is COMException innerCom)
                 {
-                    WriteTagged(ed, dwgPath, tag,
+                    WriteTaggedDst(ed, dwgPath, tag, dstPath,
                         "    Inner COM: 0x" + unchecked((uint)innerCom.ErrorCode).ToString("X8"));
                 }
                 inner = inner.InnerException;
@@ -82,7 +92,7 @@ namespace PrintLayoutAddin.Core
                 var lines = ex.StackTrace.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
                 int max = Math.Min(lines.Length, 6);
                 for (int i = 0; i < max; i++)
-                    WriteTagged(ed, dwgPath, tag, "  at " + lines[i].Trim());
+                    WriteTaggedDst(ed, dwgPath, tag, dstPath, "  at " + lines[i].Trim());
             }
         }
 

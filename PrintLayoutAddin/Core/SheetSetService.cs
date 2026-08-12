@@ -351,12 +351,9 @@ namespace PrintLayoutAddin.Core
             var dir = Path.GetDirectoryName(dstPath);
             if (!string.IsNullOrWhiteSpace(dir)) Directory.CreateDirectory(dir);
 
-            // Close our UI hold only — do NOT ForceCloseForRewrite (that deletes the DST).
-            SheetSetLauncher.ReleaseUiOpen();
-            TryCloseOpenDatabase(dstPath);
-
             IAcSmSheetSetMgr manager = null;
             IAcSmDatabase database = null;
+            bool weOpened = false;
             bool locked = false;
             bool commit = false;
             bool createdNew = false;
@@ -365,12 +362,13 @@ namespace PrintLayoutAddin.Core
                 manager = (IAcSmSheetSetMgr)CreateComObject("AcSmSheetSetMgr");
                 if (File.Exists(dstPath))
                 {
-                    database = manager.OpenDatabase(dstPath, false);
+                    database = AcquireDatabase(manager, dstPath, "import-folder", out weOpened);
                 }
                 else
                 {
                     database = manager.CreateDatabase(dstPath, "", true);
                     createdNew = true;
+                    weOpened = true;
                 }
 
                 if (database == null)
@@ -440,16 +438,7 @@ namespace PrintLayoutAddin.Core
             }
             finally
             {
-                if (database != null && locked)
-                {
-                    try { database.UnlockDb(database, commit); } catch { }
-                }
-                if (manager != null && database != null)
-                {
-                    try { manager.Close((AcSmDatabase)database); } catch { }
-                }
-                ReleaseCom(database);
-                ReleaseCom(manager);
+                ReleaseDatabase(manager, database, weOpened, locked, commit);
             }
 #endif
         }
@@ -491,11 +480,9 @@ namespace PrintLayoutAddin.Core
             var dir = Path.GetDirectoryName(dstPath);
             if (!string.IsNullOrWhiteSpace(dir)) Directory.CreateDirectory(dir);
 
-            SheetSetLauncher.ReleaseUiOpen();
-            TryCloseOpenDatabase(dstPath);
-
             IAcSmSheetSetMgr manager = null;
             IAcSmDatabase database = null;
+            bool weOpened = false;
             bool locked = false;
             bool commit = false;
             bool createdNew = false;
@@ -504,12 +491,13 @@ namespace PrintLayoutAddin.Core
                 manager = (IAcSmSheetSetMgr)CreateComObject("AcSmSheetSetMgr");
                 if (File.Exists(dstPath))
                 {
-                    database = manager.OpenDatabase(dstPath, false);
+                    database = AcquireDatabase(manager, dstPath, "import-dwg", out weOpened);
                 }
                 else
                 {
                     database = manager.CreateDatabase(dstPath, "", true);
                     createdNew = true;
+                    weOpened = true;
                 }
 
                 if (database == null)
@@ -592,28 +580,21 @@ namespace PrintLayoutAddin.Core
             }
             finally
             {
-                if (database != null && locked)
-                {
-                    try { database.UnlockDb(database, commit); } catch { }
-                }
-                if (manager != null && database != null)
-                {
-                    try { manager.Close((AcSmDatabase)database); } catch { }
-                }
-                ReleaseCom(database);
-                ReleaseCom(manager);
+                ReleaseDatabase(manager, database, weOpened, locked, commit);
             }
 #endif
         }
 
         /// <summary>
-        /// Writes a new DST (or overwrites) from the flat table:
-        /// subset header rows create 1-level subsets; following sheets go into
-        /// the current subset (or root until the next subset header).
+        /// Writes the flat table into the DST: subset header rows create subsets, and the
+        /// sheets after a header go into it (or into the root until the next header).
         /// <para>
-        /// Builds into a temp DST first, then swaps over the target. That way a
-        /// mid-write failure cannot leave the real DST empty, and we avoid
-        /// Clear+save on a DST that SSM still has open.
+        /// A path with no .dst yet goes through <c>CreateDatabase</c> once; an existing .dst
+        /// is edited in place through <c>OpenDatabase</c>. We deliberately do NOT build into
+        /// a temp DST and swap it over the target: the swap ran
+        /// <c>UpdateInMemoryDwgHints</c> while the file still had its temp name, so the
+        /// title-block Fields pointed at a path that no longer existed (#### stayed), and it
+        /// meant File.Delete on a .dst that Sheet Set Manager still owned.
         /// </para>
         /// </summary>
         private static void RebuildFromTable(
@@ -627,58 +608,28 @@ namespace PrintLayoutAddin.Core
             var dir = Path.GetDirectoryName(dstPath);
             if (!string.IsNullOrWhiteSpace(dir)) Directory.CreateDirectory(dir);
 
-            SheetSetLauncher.ReleaseUiOpen();
+            bool exists = File.Exists(dstPath);
+            string mode = exists ? "in-place" : "create-new";
+            SheetSetAutoLog.WriteStep(null, null, dstPath, $"RebuildFromTable start [{mode}]",
+                $"entries={ordered?.Count ?? 0} dstBytes={SafeLength(dstPath)} "
+                + $"dst$={File.Exists(dstPath + "$")}");
 
-            string tempPath = Path.Combine(
-                dir ?? Path.GetTempPath(),
-                Path.GetFileNameWithoutExtension(dstPath) + "." + Guid.NewGuid().ToString("N") + ".dst");
+            if (exists)
+                RewriteExistingDst(dstPath, sheetSetName, ordered);
+            else
+                CreateNewDst(dstPath, sheetSetName, ordered);
 
-            SheetSetAutoLog.WriteStep(null, null, dstPath, "RebuildFromTable start",
-                $"targetExists={File.Exists(dstPath)} target$={File.Exists(dstPath + "$")} "
-                + $"entries={ordered?.Count ?? 0} temp={tempPath}");
-
-            try
-            {
-                WriteNewDstFile(tempPath, sheetSetName, ordered);
-                SheetSetAutoLog.WriteStep(null, null, dstPath, "WriteNewDstFile OK",
-                    $"tempExists={File.Exists(tempPath)}");
-
-                // Close anything holding the target, then replace atomically-ish.
-                SheetSetAutoLog.WriteStep(null, null, dstPath, "ForceCloseForRewrite", null);
-                SheetSetLauncher.ForceCloseForRewrite(dstPath);
-                if (File.Exists(dstPath))
-                {
-                    var locked = new InvalidOperationException(
-                        "Could not replace the DST — it is still locked by Sheet Set Manager.\n\n"
-                        + "Close the sheet set in SSM (dropdown → Close), then try again.\n\n"
-                        + dstPath);
-                    SheetSetAutoLog.WriteException(
-                        null, null, "PLSHEETSET", "DST still on disk after ForceClose", locked, dstPath);
-                    throw locked;
-                }
-
-                SheetSetAutoLog.WriteStep(null, null, dstPath, "File.Move temp→target", null);
-                File.Move(tempPath, dstPath);
-                tempPath = null; // moved
-                SheetSetAutoLog.WriteStep(null, null, dstPath, "RebuildFromTable OK", null);
-            }
-            catch (COMException ex)
-            {
-                throw WrapCom(ex, "RebuildFromTable", dstPath);
-            }
-            finally
-            {
-                if (!string.IsNullOrEmpty(tempPath))
-                {
-                    try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { }
-                    try { if (File.Exists(tempPath + "$")) File.Delete(tempPath + "$"); } catch { }
-                }
-            }
+            SheetSetAutoLog.WriteStep(null, null, dstPath, $"RebuildFromTable OK [{mode}]",
+                $"dstBytes={SafeLength(dstPath)}");
 #endif
         }
 
-        /// <summary>Create a brand-new DST file with the dialog table contents.</summary>
-        private static void WriteNewDstFile(
+        /// <summary>
+        /// First write for a path that has no .dst yet — the only place <c>CreateDatabase</c>
+        /// is allowed to run. If the write fails the half-built file is removed; it did not
+        /// exist beforehand, so deleting it cannot destroy user data.
+        /// </summary>
+        private static void CreateNewDst(
             string dstPath,
             string sheetSetName,
             IList<SheetSetEntry> ordered)
@@ -690,8 +641,8 @@ namespace PrintLayoutAddin.Core
             try
             {
                 manager = (IAcSmSheetSetMgr)CreateComObject("AcSmSheetSetMgr");
-                SheetSetAutoLog.WriteStep(null, null, dstPath, "CreateDatabase",
-                    $"path={dstPath} exists={File.Exists(dstPath)}");
+                SheetSetAutoLog.WriteStep(null, null, dstPath, "CreateDatabase [create-new]",
+                    $"exists={File.Exists(dstPath)}");
                 database = manager.CreateDatabase(dstPath, "", true);
                 if (database == null)
                     throw new InvalidOperationException("AutoCAD did not create the sheet set database.");
@@ -703,108 +654,23 @@ namespace PrintLayoutAddin.Core
                 if (sheetSet == null)
                     throw new InvalidOperationException("Sheet set is null after creating DST.");
 
-                sheetSet.SetName(
-                    string.IsNullOrWhiteSpace(sheetSetName)
-                        ? Path.GetFileNameWithoutExtension(dstPath)
-                        : sheetSetName.Trim());
+                sheetSet.SetName(ResolveSheetSetName(dstPath, sheetSetName));
 
                 string newSheetFolder = ResolveNewSheetFolder(dstPath, ordered);
                 ApplyNewSheetLocation(sheetSet, sheetSet, newSheetFolder);
                 try { sheetSet.SetPromptForDwt(true); } catch { }
 
-                // Stack of open subsets by depth (index 0 = level 1).
-                var subsetStack = new List<IAcSmSubset>();
-                foreach (var entry in ordered)
-                {
-                    if (entry == null) continue;
+                PopulateSheetSet(sheetSet, ordered, newSheetFolder, dstPath);
 
-                    if (entry.IsSubset)
-                    {
-                        int level = Math.Max(1, entry.SubsetLevel);
-                        while (subsetStack.Count >= level)
-                        {
-                            ReleaseCom(subsetStack[subsetStack.Count - 1]);
-                            subsetStack.RemoveAt(subsetStack.Count - 1);
-                        }
-
-                        var name = (entry.Title ?? entry.SubsetName ?? "Subset").Trim();
-                        if (string.IsNullOrWhiteSpace(name)) name = "Subset";
-
-                        IAcSmSubset created;
-                        if (subsetStack.Count == 0)
-                        {
-                            created = sheetSet.CreateSubset(name, "");
-                        }
-                        else
-                        {
-                            created = subsetStack[subsetStack.Count - 1].CreateSubset(name, "");
-                        }
-
-                        if (created == null)
-                            throw new InvalidOperationException("CreateSubset returned null for: " + name);
-                        ApplyNewSheetLocation(created, created, newSheetFolder);
-                        try { created.SetPromptForDwt(true); } catch { }
-                        subsetStack.Add(created);
-                        continue;
-                    }
-
-                    if (entry.Layout == null) continue;
-                    if (string.IsNullOrWhiteSpace(entry.DwgPath) || !File.Exists(entry.DwgPath))
-                        throw new FileNotFoundException(
-                            "Save the source DWG before creating a sheet set.", entry.DwgPath);
-
-                    IAcSmSubset currentSubset = subsetStack.Count > 0
-                        ? subsetStack[subsetStack.Count - 1]
-                        : null;
-                    IAcSmPersist initOwner = currentSubset != null
-                        ? (IAcSmPersist)currentSubset
-                        : (IAcSmPersist)sheetSet;
-                    var layoutRef = (IAcSmAcDbLayoutReference)CreateComObject("AcSmAcDbLayoutReference");
-                    layoutRef.InitNew(initOwner);
-                    layoutRef.SetFileName(entry.DwgPath);
-                    layoutRef.SetName(entry.Layout.Name);
-
-                    IAcSmSheet sheet = currentSubset != null
-                        ? currentSubset.ImportSheet((AcSmAcDbLayoutReference)layoutRef)
-                        : sheetSet.ImportSheet((AcSmAcDbLayoutReference)layoutRef);
-
-                    if (sheet == null)
-                        throw new InvalidOperationException(
-                            $"Could not import layout '{entry.Layout.Name}'.");
-
-                    sheet.SetNumber(entry.SheetNumber ?? "");
-                    sheet.SetTitle(
-                        string.IsNullOrWhiteSpace(entry.Title)
-                            ? entry.Layout.Name
-                            : entry.Title.Trim());
-                    TrySetRevisionNumber(sheet, entry.Revision ?? "");
-
-                    try
-                    {
-                        if (currentSubset != null)
-                            currentSubset.InsertComponent(sheet, null);
-                        else
-                            sheetSet.InsertComponent(sheet, null);
-                    }
-                    catch (COMException)
-                    {
-                        // Already in the set — safe to continue.
-                    }
-
-                    ReleaseCom(sheet);
-                    ReleaseCom(layoutRef);
-                }
-
-                foreach (var s in subsetStack) ReleaseCom(s);
-                subsetStack.Clear();
-                try { database.UpdateInMemoryDwgHints(); } catch { }
-                try { sheetSet.UpdateInMemoryDwgHints(); } catch { }
+                PushDwgHints(database, sheetSet, dstPath);
                 ReleaseCom(sheetSet);
                 commit = true;
             }
             catch (COMException ex)
             {
-                throw WrapCom(ex, "CreateDatabase", dstPath);
+                // Label the method, not a guessed API — the old "CreateDatabase" label was
+                // hard-coded and hid the fact that ImportSheet was the call being rejected.
+                throw WrapCom(ex, "CreateNewDst", dstPath);
             }
             finally
             {
@@ -812,13 +678,335 @@ namespace PrintLayoutAddin.Core
                 {
                     try { database.UnlockDb(database, commit); } catch { }
                 }
+                // We created this database, so we own it and must close it.
                 if (manager != null && database != null)
                 {
                     try { manager.Close((AcSmDatabase)database); } catch { }
                 }
                 ReleaseCom(database);
                 ReleaseCom(manager);
+
+                // Keep whatever CreateDatabase produced even when populating failed. The file
+                // holds a valid (possibly empty) sheet set, so the next run takes the in-place
+                // path instead of re-creating from scratch forever.
+                if (!commit)
+                {
+                    SheetSetAutoLog.WriteStep(null, null, dstPath, "CreateNewDst failed",
+                        $"leaving the file in place — dstBytes={SafeLength(dstPath)}");
+                }
             }
+        }
+
+        /// <summary>
+        /// Rewrites a .dst that already exists, in place: empty the sheet set, then re-add
+        /// subsets/sheets from the table. No temp file, no File.Move, no File.Delete — an
+        /// existing .dst is only ever touched through AcSm.
+        /// <para>
+        /// When this AutoCAD session already has the .dst open (Sheet Set Manager, or our own
+        /// UI hold) we reuse that database object rather than opening a second handle on the
+        /// same path.
+        /// </para>
+        /// </summary>
+        private static void RewriteExistingDst(
+            string dstPath,
+            string sheetSetName,
+            IList<SheetSetEntry> ordered)
+        {
+            IAcSmSheetSetMgr manager = null;
+            IAcSmDatabase database = null;
+            bool weOpened = false;
+            bool locked = false;
+            bool commit = false;
+            try
+            {
+                manager = (IAcSmSheetSetMgr)CreateComObject("AcSmSheetSetMgr");
+                database = AcquireDatabase(manager, dstPath, "in-place", out weOpened);
+                if (database == null)
+                    throw new InvalidOperationException(
+                        "Could not open the sheet set database:\n\n" + dstPath);
+
+                database.LockDb(database);
+                locked = true;
+
+                IAcSmSheetSet sheetSet = database.GetSheetSet();
+                if (sheetSet == null)
+                    throw new InvalidOperationException("Sheet set is null for:\n\n" + dstPath);
+
+                sheetSet.SetName(ResolveSheetSetName(dstPath, sheetSetName));
+
+                ClearSheetSetContents(sheetSet);
+                int leftover = CountSheetsAndSubsets(sheetSet);
+                SheetSetAutoLog.WriteStep(null, null, dstPath, "ClearSheetSetContents [in-place]",
+                    $"sheets/subsets left={leftover}");
+                if (leftover > 0)
+                {
+                    // Stop rather than re-add on top of the old tree — a half-cleared rebuild
+                    // would duplicate every sheet.
+                    throw new InvalidOperationException(
+                        $"Could not empty the sheet set before rebuilding — {leftover} "
+                        + "sheet(s)/subset(s) could not be removed.\n\n"
+                        + "Close the sheet set in Sheet Set Manager (dropdown → Close), then "
+                        + "Create / Update again.\n\n" + dstPath);
+                }
+
+                string newSheetFolder = ResolveNewSheetFolder(dstPath, ordered);
+                ApplyNewSheetLocation(sheetSet, sheetSet, newSheetFolder);
+                try { sheetSet.SetPromptForDwt(true); } catch { }
+
+                PopulateSheetSet(sheetSet, ordered, newSheetFolder, dstPath);
+
+                PushDwgHints(database, sheetSet, dstPath);
+                ReleaseCom(sheetSet);
+                commit = true;
+            }
+            catch (COMException ex)
+            {
+                throw WrapCom(ex, "RewriteExistingDst", dstPath);
+            }
+            finally
+            {
+                ReleaseDatabase(manager, database, weOpened, locked, commit);
+            }
+        }
+
+        /// <summary>
+        /// Adds the table's subset headers and sheets to <paramref name="sheetSet"/>.
+        /// Shared by the create-new and in-place paths.
+        /// </summary>
+        private static void PopulateSheetSet(
+            IAcSmSheetSet sheetSet,
+            IList<SheetSetEntry> ordered,
+            string newSheetFolder,
+            string dstPath)
+        {
+            // Stack of open subsets by depth (index 0 = level 1).
+            var subsetStack = new List<IAcSmSubset>();
+            foreach (var entry in ordered)
+            {
+                if (entry == null) continue;
+
+                if (entry.IsSubset)
+                {
+                    int level = Math.Max(1, entry.SubsetLevel);
+                    while (subsetStack.Count >= level)
+                    {
+                        ReleaseCom(subsetStack[subsetStack.Count - 1]);
+                        subsetStack.RemoveAt(subsetStack.Count - 1);
+                    }
+
+                    var name = (entry.Title ?? entry.SubsetName ?? "Subset").Trim();
+                    if (string.IsNullOrWhiteSpace(name)) name = "Subset";
+
+                    IAcSmSubset created;
+                    if (subsetStack.Count == 0)
+                    {
+                        created = sheetSet.CreateSubset(name, "");
+                    }
+                    else
+                    {
+                        created = subsetStack[subsetStack.Count - 1].CreateSubset(name, "");
+                    }
+
+                    if (created == null)
+                        throw new InvalidOperationException("CreateSubset returned null for: " + name);
+                    ApplyNewSheetLocation(created, created, newSheetFolder);
+                    try { created.SetPromptForDwt(true); } catch { }
+                    subsetStack.Add(created);
+                    continue;
+                }
+
+                if (entry.Layout == null) continue;
+                if (string.IsNullOrWhiteSpace(entry.DwgPath) || !File.Exists(entry.DwgPath))
+                    throw new FileNotFoundException(
+                        "Save the source DWG before creating a sheet set.", entry.DwgPath);
+
+                IAcSmSubset currentSubset = subsetStack.Count > 0
+                    ? subsetStack[subsetStack.Count - 1]
+                    : null;
+                IAcSmPersist initOwner = currentSubset != null
+                    ? (IAcSmPersist)currentSubset
+                    : (IAcSmPersist)sheetSet;
+                var layoutRef = (IAcSmAcDbLayoutReference)CreateComObject("AcSmAcDbLayoutReference");
+                layoutRef.InitNew(initOwner);
+                layoutRef.SetFileName(entry.DwgPath);
+                layoutRef.SetName(entry.Layout.Name);
+
+                IAcSmSheet sheet;
+                try
+                {
+                    sheet = currentSubset != null
+                        ? currentSubset.ImportSheet((AcSmAcDbLayoutReference)layoutRef)
+                        : sheetSet.ImportSheet((AcSmAcDbLayoutReference)layoutRef);
+                }
+                catch (COMException)
+                {
+                    LogImportSheetFailure(entry, dstPath);
+                    throw;
+                }
+
+                if (sheet == null)
+                    throw new InvalidOperationException(
+                        $"Could not import layout '{entry.Layout.Name}'.");
+
+                sheet.SetNumber(entry.SheetNumber ?? "");
+                sheet.SetTitle(
+                    string.IsNullOrWhiteSpace(entry.Title)
+                        ? entry.Layout.Name
+                        : entry.Title.Trim());
+                TrySetRevisionNumber(sheet, entry.Revision ?? "");
+
+                try
+                {
+                    if (currentSubset != null)
+                        currentSubset.InsertComponent(sheet, null);
+                    else
+                        sheetSet.InsertComponent(sheet, null);
+                }
+                catch (COMException)
+                {
+                    // Already in the set — safe to continue.
+                }
+
+                ReleaseCom(sheet);
+                ReleaseCom(layoutRef);
+            }
+
+            foreach (var s in subsetStack) ReleaseCom(s);
+            subsetStack.Clear();
+        }
+
+        /// <summary>
+        /// Records everything needed to explain an ImportSheet rejection: AcSm resolves the
+        /// layout through the .dwg as SAVED ON DISK, so a layout PLAYOUT just created but
+        /// nobody saved is invisible to it, and the raw HRESULT says nothing about that.
+        /// </summary>
+        private static void LogImportSheetFailure(SheetSetEntry entry, string dstPath)
+        {
+            string layoutName = entry?.Layout?.Name ?? "";
+            string dwgPath = entry?.DwgPath ?? "";
+            var onDisk = ReadLayoutNamesFromDisk(dwgPath);
+
+            string diskState = onDisk == null
+                ? "unreadable"
+                : (onDisk.Any(n => string.Equals(n, layoutName, StringComparison.OrdinalIgnoreCase))
+                    ? "PRESENT"
+                    : "MISSING");
+
+            string dbmod = "?";
+            try { dbmod = Convert.ToString(AcadApp.GetSystemVariable("DBMOD"), CultureInfo.InvariantCulture); }
+            catch { }
+
+            string savedAt = "?";
+            try { if (File.Exists(dwgPath)) savedAt = File.GetLastWriteTime(dwgPath).ToString("HH:mm:ss"); }
+            catch { }
+
+            SheetSetAutoLog.WriteTagged(null, null, "PLSHEETSET-STEP", dstPath:dstPath, message:
+                $"ImportSheet REJECTED | layout='{layoutName}' number='{entry?.SheetNumber}' "
+                + $"layoutInSavedDwg={diskState} dwgSavedAt={savedAt} DBMOD={dbmod} "
+                + $"(DBMOD!=0 means the drawing has unsaved changes) dwg={dwgPath}");
+
+            if (onDisk != null)
+            {
+                SheetSetAutoLog.WriteTagged(null, null, "PLSHEETSET-STEP", dstPath:dstPath, message:
+                    "  layouts in the saved .dwg: " + string.Join(", ", onDisk));
+            }
+        }
+
+        /// <summary>
+        /// Layout names in the .dwg as it sits ON DISK — deliberately not the in-memory
+        /// document, because that is what AcSm reads. Null when the file cannot be read.
+        /// </summary>
+        private static List<string> ReadLayoutNamesFromDisk(string dwgPath)
+        {
+            if (string.IsNullOrWhiteSpace(dwgPath) || !File.Exists(dwgPath)) return null;
+
+            Autodesk.AutoCAD.DatabaseServices.Database db = null;
+            try
+            {
+                db = new Autodesk.AutoCAD.DatabaseServices.Database(false, true);
+                db.ReadDwgFile(
+                    dwgPath,
+                    Autodesk.AutoCAD.DatabaseServices.FileOpenMode.OpenForReadAndReadShare,
+                    true,
+                    "");
+                db.CloseInput(true);
+
+                var names = new List<string>();
+                using (var tr = db.TransactionManager.StartTransaction())
+                {
+                    var dict = (Autodesk.AutoCAD.DatabaseServices.DBDictionary)tr.GetObject(
+                        db.LayoutDictionaryId,
+                        Autodesk.AutoCAD.DatabaseServices.OpenMode.ForRead);
+                    foreach (var item in dict)
+                    {
+                        if (!string.Equals(item.Key, "Model", StringComparison.OrdinalIgnoreCase))
+                            names.Add(item.Key);
+                    }
+                    tr.Commit();
+                }
+                return names;
+            }
+            catch
+            {
+                return null;
+            }
+            finally
+            {
+                try { db?.Dispose(); } catch { }
+            }
+        }
+
+        /// <summary>
+        /// Pushes the sheet-set association into the DWGs open in memory so title-block Fields
+        /// (CurrentSheetNumber / CurrentSheetTitle) resolve instead of showing ####.
+        /// Must run while the DST still sits at its final path.
+        /// </summary>
+        private static void PushDwgHints(
+            IAcSmDatabase database, IAcSmSheetSet sheetSet, string dstPath)
+        {
+            bool dbOk = false, setOk = false;
+            try { database?.UpdateInMemoryDwgHints(); dbOk = true; } catch { }
+            try { sheetSet?.UpdateInMemoryDwgHints(); setOk = true; } catch { }
+            SheetSetAutoLog.WriteStep(null, null, dstPath, "UpdateInMemoryDwgHints",
+                $"database={dbOk} sheetSet={setOk}");
+        }
+
+        /// <summary>
+        /// Sheets and subsets still owned by the sheet set — 0 means the tree is empty.
+        /// <para>
+        /// Counts only those two kinds on purpose. GetDirectlyOwnedObjects also hands back the
+        /// sheet set's own structural objects (new-sheet location, custom property bag, sheet
+        /// selection sets, view categories…), which ClearSheetSetContents must never remove —
+        /// counting them made an empty sheet set look like it still had 10 items.
+        /// </para>
+        /// </summary>
+        private static int CountSheetsAndSubsets(IAcSmSheetSet sheetSet)
+        {
+            if (sheetSet == null) return 0;
+            object[] owned = null;
+            try { sheetSet.GetDirectlyOwnedObjects(out owned); }
+            catch { return 0; }
+            if (owned == null) return 0;
+
+            int count = 0;
+            foreach (var item in owned)
+            {
+                if (item is IAcSmSheet || item is IAcSmSubset) count++;
+                ReleaseCom(item);
+            }
+            return count;
+        }
+
+        private static string ResolveSheetSetName(string dstPath, string sheetSetName) =>
+            string.IsNullOrWhiteSpace(sheetSetName)
+                ? Path.GetFileNameWithoutExtension(dstPath)
+                : sheetSetName.Trim();
+
+        /// <summary>File size for logging; -1 when it cannot be read.</summary>
+        private static long SafeLength(string path)
+        {
+            try { return File.Exists(path) ? new FileInfo(path).Length : 0L; }
+            catch { return -1L; }
         }
 
         /// <summary>
@@ -885,17 +1073,6 @@ namespace PrintLayoutAddin.Core
             }
         }
 
-        private static void SoftReleaseCom(object value)
-        {
-            if (value == null) return;
-            try
-            {
-                if (Marshal.IsComObject(value))
-                    Marshal.ReleaseComObject(value);
-            }
-            catch { }
-        }
-
         /// <summary>
         /// Removes sheet entries whose layout name matches any of
         /// <paramref name="layoutNames"/> (case-insensitive). Subset headers are kept.
@@ -927,18 +1104,16 @@ namespace PrintLayoutAddin.Core
                 return false;
             }
 
-            SheetSetLauncher.ReleaseUiOpen();
-            SheetSetLauncher.SoftCloseOpenDatabase(dstPath);
-
             IAcSmSheetSetMgr manager = null;
             IAcSmDatabase database = null;
+            bool weOpened = false;
             bool locked = false;
             bool commit = false;
             int removed = 0;
             try
             {
                 manager = (IAcSmSheetSetMgr)CreateComObject("AcSmSheetSetMgr");
-                database = manager.OpenDatabase(dstPath, false);
+                database = AcquireDatabase(manager, dstPath, "remove-sheets", out weOpened);
                 if (database == null)
                 {
                     message = "Could not open DST: " + dstPath;
@@ -978,16 +1153,7 @@ namespace PrintLayoutAddin.Core
             }
             finally
             {
-                if (database != null && locked)
-                {
-                    try { database.UnlockDb(database, commit); } catch { }
-                }
-                if (manager != null && database != null)
-                {
-                    try { manager.Close((AcSmDatabase)database); } catch { }
-                }
-                ReleaseCom(database);
-                ReleaseCom(manager);
+                ReleaseDatabase(manager, database, weOpened, locked, commit);
             }
 #endif
         }
@@ -1142,15 +1308,16 @@ namespace PrintLayoutAddin.Core
             if (string.IsNullOrWhiteSpace(dstPath) || !File.Exists(dstPath))
                 return null;
 
-            // Don't ReleaseUiOpen here — reading while SSM has it open often still works;
-            // if OpenDatabase fails, caller falls back to model seed.
+            // Reading while SSM has the DST open is fine — we reuse its database object.
+            // If that fails, the caller falls back to seeding from the model.
             IAcSmSheetSetMgr manager = null;
             IAcSmDatabase database = null;
+            bool weOpened = false;
             bool locked = false;
             try
             {
                 manager = (IAcSmSheetSetMgr)CreateComObject("AcSmSheetSetMgr");
-                database = manager.OpenDatabase(dstPath, false);
+                database = AcquireDatabase(manager, dstPath, "read", out weOpened);
                 if (database == null) return null;
 
                 database.LockDb(database);
@@ -1174,7 +1341,8 @@ namespace PrintLayoutAddin.Core
             }
             finally
             {
-                Cleanup(manager, database, locked);
+                // Read-only: commit true keeps AcSm's own bookkeeping happy, nothing was edited.
+                ReleaseDatabase(manager, database, weOpened, locked, commit: true);
             }
 #endif
         }
@@ -1699,43 +1867,58 @@ namespace PrintLayoutAddin.Core
             }
         }
 
-        private static void Cleanup(IAcSmSheetSetMgr manager, IAcSmDatabase database, bool locked)
+        /// <summary>
+        /// Hands back the session's database for <paramref name="dstPath"/>. If AcSm already
+        /// has it open — Sheet Set Manager's palette, or our own UI hold — that same object is
+        /// reused instead of opening a rival handle on the file. <paramref name="weOpened"/>
+        /// tells the caller whether it owns the matching Close.
+        /// </summary>
+        private static IAcSmDatabase AcquireDatabase(
+            IAcSmSheetSetMgr manager, string dstPath, string tag, out bool weOpened)
+        {
+            weOpened = false;
+            if (manager == null) return null;
+
+            IAcSmDatabase database = null;
+            try { database = manager.FindOpenDatabase(dstPath); } catch { database = null; }
+            if (database != null)
+            {
+                SheetSetAutoLog.WriteStep(null, null, dstPath, $"FindOpenDatabase [{tag}]",
+                    "reusing the database already open in this session");
+                return database;
+            }
+
+            SheetSetAutoLog.WriteStep(null, null, dstPath, $"OpenDatabase [{tag}]", null);
+            database = manager.OpenDatabase(dstPath, false);
+            weOpened = true;
+            return database;
+        }
+
+        /// <summary>
+        /// Unlock, then close only a database this code opened. Closing one that Sheet Set
+        /// Manager owns leaves its palette holding a dead object and breaks later AcSm calls.
+        /// </summary>
+        private static void ReleaseDatabase(
+            IAcSmSheetSetMgr manager,
+            IAcSmDatabase database,
+            bool weOpened,
+            bool locked,
+            bool commit)
         {
             if (database != null && locked)
             {
-                try { database.UnlockDb(database, true); } catch { }
+                try { database.UnlockDb(database, commit); } catch { }
             }
-            if (manager != null && database != null)
+            if (weOpened)
             {
-                try { manager.Close((AcSmDatabase)database); } catch { }
+                if (manager != null && database != null)
+                {
+                    try { manager.Close((AcSmDatabase)database); } catch { }
+                }
+                ReleaseCom(database);
             }
-            ReleaseCom(database);
             ReleaseCom(manager);
         }
-
-#if ACSM_INTEROP
-        /// <summary>Close DST if AcSm already has it open — does not delete the file.</summary>
-        private static void TryCloseOpenDatabase(string dstPath)
-        {
-            if (string.IsNullOrWhiteSpace(dstPath)) return;
-            IAcSmSheetSetMgr manager = null;
-            try
-            {
-                manager = (IAcSmSheetSetMgr)CreateComObject("AcSmSheetSetMgr");
-                var open = manager.FindOpenDatabase(dstPath);
-                if (open != null)
-                {
-                    try { manager.Close((AcSmDatabase)open); } catch { }
-                    ReleaseCom(open);
-                }
-            }
-            catch { }
-            finally
-            {
-                ReleaseCom(manager);
-            }
-        }
-#endif
 
         private static object CreateComObject(string className)
         {
@@ -1825,12 +2008,19 @@ namespace PrintLayoutAddin.Core
             }
         }
 
+        /// <summary>
+        /// Drops exactly the one reference we took — never <c>FinalReleaseComObject</c>.
+        /// AcSmSheetSetMgr is a per-session singleton that AutoCAD's own Sheet Set Manager
+        /// shares, and databases can be co-owned by its palette; forcing an RCW's count to
+        /// zero left AutoCAD holding released pointers, after which <c>CreateDatabase</c>
+        /// failed for the rest of the session with a bogus "Class not registered".
+        /// </summary>
         private static void ReleaseCom(object value)
         {
             if (value == null) return;
             try
             {
-                if (Marshal.IsComObject(value)) Marshal.FinalReleaseComObject(value);
+                if (Marshal.IsComObject(value)) Marshal.ReleaseComObject(value);
             }
             catch { }
         }
@@ -1874,8 +2064,10 @@ namespace PrintLayoutAddin.Core
             }
             else if (unchecked((uint)ex.ErrorCode) == 0x80040211)
             {
-                hint = " (HRESULT 0x80040211 — AcSm rejected the call; may be DST lock, zombie AcSm state, "
-                    + "or path issue — not always a visible .dst file. See pl_sheetset_auto.log.)";
+                hint = " (HRESULT 0x80040211 — AcSm rejected the call. It is usually ImportSheet: "
+                    + "the layout has to exist in the .dwg AS SAVED ON DISK, so save the drawing "
+                    + "and try again. The log line 'ImportSheet REJECTED' names the layout and "
+                    + "says whether it is in the saved file. See pl_sheetset_auto.log.)";
             }
             else
             {

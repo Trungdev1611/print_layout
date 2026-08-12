@@ -309,23 +309,17 @@ namespace PrintLayoutAddin.Core
                     }
                 }
 
+                // Previously this reopened each DST in Sheet Set Manager (ReloadForUser).
+                // That close/release/reopen churn on a shared AcSm database is what left the
+                // session unable to create a DST afterwards, so we only report the change —
+                // SSM refreshes its own tree.
                 foreach (var dstPath in reopenDsts)
                 {
-                    try
-                    {
-                        string note = SheetSetLauncher.ReloadForUser(dstPath);
-                        SheetSetAutoLog.Write(
-                            AcadApp.DocumentManager?.MdiActiveDocument?.Editor,
-                            AcadApp.DocumentManager?.MdiActiveDocument?.Name,
-                            "after layout-delete: " + note);
-                    }
-                    catch (Exception ex)
-                    {
-                        SheetSetAutoLog.Write(
-                            AcadApp.DocumentManager?.MdiActiveDocument?.Editor,
-                            AcadApp.DocumentManager?.MdiActiveDocument?.Name,
-                            "after layout-delete SSM reload error: " + ex.Message);
-                    }
+                    SheetSetAutoLog.Write(
+                        AcadApp.DocumentManager?.MdiActiveDocument?.Editor,
+                        AcadApp.DocumentManager?.MdiActiveDocument?.Name,
+                        "after layout-delete: DST updated — " + dstPath
+                        + " (refresh Sheet Set Manager to see it)");
                 }
             }
             finally

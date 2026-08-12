@@ -1321,6 +1321,20 @@ namespace PrintLayoutAddin.UI
             {
                 UseWaitCursor = true;
                 _createBtn.Enabled = false;
+
+                // ImportSheet resolves layouts from the .dwg on disk, so anything edited since
+                // the last save (e.g. a PLAYOUT run made while this dialog was open) has to be
+                // written out first or AcSm rejects the import with a bare HRESULT.
+                var activeDoc = AcadApp.DocumentManager?.MdiActiveDocument;
+                if (activeDoc != null
+                    && !Commands.EnsureSavedForSheetSet(activeDoc, activeDoc.Editor, _dwgPath))
+                {
+                    SetStatus(
+                        "Could not save the drawing. Save it manually (Ctrl+S), then Create / Update again.",
+                        true);
+                    return;
+                }
+
                 SheetSetService.CreateOrReplace(path, _nameBox.Text, writeList);
                 try
                 {

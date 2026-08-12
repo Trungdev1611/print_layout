@@ -308,6 +308,14 @@ namespace PrintLayoutAddin
                 SheetSetAutoLog.Write(ed, dwgPath,
                     $"drawing-name map entries={drawingNames?.Count ?? 0}");
 
+                if (!EnsureSavedForSheetSet(doc, ed, dwgPath))
+                {
+                    NotifyAutoSheetSetFailed(
+                        "The drawing could not be saved, and AcSm can only import layouts that "
+                        + "exist in the saved .dwg. See the log for details.");
+                    return;
+                }
+
                 SheetSetAutoLog.Write(ed, dwgPath, "calling CreateOrReplace (silent)…");
                 var sync = SheetSetService.TryAutoSyncFromLayouts(dwgPath, layouts, drawingNames);
                 SheetSetAutoLog.Write(ed, dwgPath,
@@ -321,16 +329,10 @@ namespace PrintLayoutAddin
                     return;
                 }
 
-                try
-                {
-                    string note = SheetSetLauncher.ReloadForUser(sync.DstPath);
-                    SheetSetAutoLog.Write(ed, dwgPath, "SSM reload: " + note);
-                }
-                catch (System.Exception openEx)
-                {
-                    SheetSetAutoLog.Write(ed, dwgPath, "SSM reload error: " + openEx.Message);
-                }
-
+                // Deliberately no ReloadForUser/SHEETSET here. Opening the DST in Sheet Set
+                // Manager on every PLAYOUT planted a second owner on the file, and the
+                // release/reopen churn around it was what broke later Create/Update calls.
+                // UpdateInMemoryDwgHints (inside the sync) is what the Fields need — not SSM.
                 try
                 {
                     // Queue REGEN so Sheet Set fields re-evaluate after DST association.
@@ -350,8 +352,47 @@ namespace PrintLayoutAddin
         }
 
         /// <summary>
+        /// AcSm's ImportSheet resolves each layout through the .dwg as SAVED ON DISK, so the
+        /// layouts PLAYOUT just created stay invisible to it until the drawing is written out —
+        /// the sync then fails with a bare HRESULT 0x80040211 that names no cause. Save first.
+        /// </summary>
+        internal static bool EnsureSavedForSheetSet(Document doc, Editor ed, string dwgPath)
+        {
+            int dbmod = 0;
+            try { dbmod = Convert.ToInt32(AcadApp.GetSystemVariable("DBMOD")); }
+            catch { }
+            if (dbmod == 0)
+            {
+                SheetSetAutoLog.Write(ed, dwgPath, "DWG has no unsaved changes (DBMOD=0)");
+                return true;
+            }
+
+            try
+            {
+                // Lock the document — SaveAs without it throws when called from this context.
+                using (doc.LockDocument())
+                {
+                    doc.Database.SaveAs(
+                        doc.Name,
+                        true,
+                        doc.Database.OriginalFileVersion,
+                        doc.Database.SecurityParameters);
+                }
+                SheetSetAutoLog.Write(ed, dwgPath,
+                    $"saved DWG before sheet set sync (DBMOD was {dbmod}) — "
+                    + "ImportSheet reads layouts from the file on disk");
+                return true;
+            }
+            catch (System.Exception ex)
+            {
+                SheetSetAutoLog.Write(ed, dwgPath,
+                    "could not save the DWG before sheet set sync: " + ex.Message);
+                return false;
+            }
+        }
+
+        /// <summary>
         /// Layouts from PLAYOUT are fine; only the silent DST sync failed.
-        /// Prompt the user to retry PLSHEETSET or restart AutoCAD (DST lock).
         /// </summary>
         private static void NotifyAutoSheetSetFailed(string detail)
         {
@@ -362,8 +403,8 @@ namespace PrintLayoutAddin
                     "Build Layouts finished, but auto Sheet Set (DST) failed.\n\n"
                     + reason
                     + "\n\nLayouts are OK. To fix title-block fields (####):\n"
-                    + "1. Close the sheet set in Sheet Set Manager (dropdown → Close),\n"
-                    + "   or restart AutoCAD if it stays locked.\n"
+                    + "1. Save the drawing (Ctrl+S) — the sheet set can only import layouts\n"
+                    + "   that exist in the saved .dwg.\n"
                     + "2. Run PLSHEETSET (Create / Update) manually.\n"
                     + "3. REGEN the layout.\n\n"
                     + "Details: "

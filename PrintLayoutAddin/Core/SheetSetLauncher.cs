@@ -110,68 +110,11 @@ namespace PrintLayoutAddin.Core
 #endif
         }
 
-        /// <summary>
-        /// Best-effort: close this DST everywhere AcSm has it open (our UI hold + SSM),
-        /// then delete <c>.dst</c> / <c>.dst$</c> lock leftovers so Create/Update can rewrite.
-        /// </summary>
-        public static void ForceCloseForRewrite(string dstPath)
-        {
-            ReleaseUiOpen();
-
-#if ACSM_INTEROP
-            if (!string.IsNullOrWhiteSpace(dstPath))
-            {
-                IAcSmSheetSetMgr manager = null;
-                try
-                {
-                    manager = (IAcSmSheetSetMgr)CreateMgr();
-                    try
-                    {
-                        var open = manager.FindOpenDatabase(dstPath);
-                        if (open != null)
-                        {
-                            try { manager.Close((AcSmDatabase)open); } catch { }
-                            ReleaseCom(open);
-                        }
-                    }
-                    catch { }
-
-                    // Nuclear: SSM may hold the DST without FindOpenDatabase matching path.
-                    try { manager.CloseAll(); } catch { }
-                }
-                catch { }
-                finally
-                {
-                    ReleaseCom(manager);
-                }
-            }
-#endif
-
-            TryDeleteDstFiles(dstPath);
-        }
-
-        private static void TryDeleteDstFiles(string dstPath)
-        {
-            if (string.IsNullOrWhiteSpace(dstPath)) return;
-
-            foreach (var path in new[]
-                     {
-                         dstPath,
-                         dstPath + "$",
-                         Path.ChangeExtension(dstPath, ".dst$"),
-                     }.Distinct(StringComparer.OrdinalIgnoreCase))
-            {
-                try
-                {
-                    if (File.Exists(path))
-                        File.Delete(path);
-                }
-                catch
-                {
-                    // Caller surfaces a clearer error if the main .dst still exists.
-                }
-            }
-        }
+        // ForceCloseForRewrite / TryDeleteDstFiles used to live here. They called
+        // manager.CloseAll() — closing every sheet set AcSm had open in the session,
+        // including ones the SSM palette owned — and then File.Delete'd the user's .dst so a
+        // temp file could be moved over it. SheetSetService now edits an existing .dst in
+        // place through AcSm, so nothing needs to force a close or delete the file.
 
         private static string TryKeepOpenInManager(string dstPath)
         {
@@ -257,12 +200,17 @@ namespace PrintLayoutAddin.Core
             throw new InvalidOperationException("AcSmSheetSetMgr is unavailable.");
         }
 
+        /// <summary>
+        /// Drops only the reference we took. <c>FinalReleaseComObject</c> here forced the
+        /// shared AcSmSheetSetMgr singleton's RCW to zero while AutoCAD's own Sheet Set
+        /// Manager still used it — see the note on SheetSetService.ReleaseCom.
+        /// </summary>
         private static void ReleaseCom(object value)
         {
             if (value == null) return;
             try
             {
-                if (Marshal.IsComObject(value)) Marshal.FinalReleaseComObject(value);
+                if (Marshal.IsComObject(value)) Marshal.ReleaseComObject(value);
             }
             catch { }
         }
