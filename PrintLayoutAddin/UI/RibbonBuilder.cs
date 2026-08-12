@@ -83,7 +83,7 @@ namespace PrintLayoutAddin.UI
                 Image = DrawLayoutIcon(16),
                 Size = RibbonItemSize.Large,
                 Orientation = Orientation.Vertical,
-                Description = "Generate layouts + viewport per frame from a template layout (PLAYOUT).",
+                Description = "Generate layouts + viewport per frame (requires P1/P2 from Title Block Setup).",
                 CommandHandler = new RelayCommand(() => AcadApp.DocumentManager.MdiActiveDocument?
                     .SendStringToExecute("_PLAYOUT ", true, false, true))
             };
@@ -125,7 +125,7 @@ namespace PrintLayoutAddin.UI
                 Image = DrawFrameSetupIcon(16),
                 Size = RibbonItemSize.Large,
                 Orientation = Orientation.Vertical,
-                Description = "Place Sheet Set fields and revision table on a title block (PLFRAME_SETUP).",
+                Description = "Pick viewport P1/P2, typography, and run Auto Frame Setup (PLFRAME_SETUP).",
                 CommandHandler = new RelayCommand(() => AcadApp.DocumentManager.MdiActiveDocument?
                     .SendStringToExecute("_PLFRAME_SETUP ", true, false, true))
             };
@@ -142,20 +142,6 @@ namespace PrintLayoutAddin.UI
                 Description = "Erase PLAUTO-generated native frame blocks and optionally their layouts (PLCLEAN).",
                 CommandHandler = new RelayCommand(() => AcadApp.DocumentManager.MdiActiveDocument?
                     .SendStringToExecute("_PLCLEAN ", true, false, true))
-            };
-
-            var btnReset = new RibbonButton
-            {
-                Text = "Reset\nCorners",
-                ShowText = true,
-                ShowImage = true,
-                LargeImage = DrawResetIcon(32),
-                Image = DrawResetIcon(16),
-                Size = RibbonItemSize.Large,
-                Orientation = Orientation.Vertical,
-                Description = "Clear the saved 2 viewport corners so the next PLAYOUT will prompt again (PLVP).",
-                CommandHandler = new RelayCommand(() => AcadApp.DocumentManager.MdiActiveDocument?
-                    .SendStringToExecute("_PLVP ", true, false, true))
             };
 
             var btnKeys = new RibbonButton
@@ -186,14 +172,13 @@ namespace PrintLayoutAddin.UI
                     .SendStringToExecute("_PLLICENSE ", true, false, true))
             };
 
-            panelSource.Items.Add(btnFrameSetup);
             panelSource.Items.Add(btnAuto);
+            panelSource.Items.Add(btnFrameSetup);
             panelSource.Items.Add(btnStt);
             panelSource.Items.Add(btnLayout);
             panelSource.Items.Add(btnSheetSet);
             panelSource.Items.Add(btnPrint);
             panelSource.Items.Add(btnClean);
-            panelSource.Items.Add(btnReset);
             panelSource.Items.Add(btnKeys);
             panelSource.Items.Add(btnLicense);
 

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Windows.Forms;
 using Autodesk.AutoCAD.Colors;
 using Autodesk.AutoCAD.DatabaseServices;
@@ -126,16 +127,19 @@ namespace PrintLayoutAddin.Core
             BuildFieldCode(FieldKey(kind));
 
         /// <summary>Default attribute / placeholder text height (drawing units).</summary>
-        public const double DefaultTextHeight = 2.5;
+        public const double DefaultTextHeight = 3.0;
 
         /// <summary>Default total revision-table width (drawing units).</summary>
         public const double DefaultTableWidth = 75.0;
 
         /// <summary>Default revision-table header text height.</summary>
-        public const double DefaultTableHeaderTextHeight = 2.5;
+        public const double DefaultTableHeaderTextHeight = 3.0;
 
         /// <summary>Default revision-table data cell text height.</summary>
-        public const double DefaultTableDataTextHeight = 2.5;
+        public const double DefaultTableDataTextHeight = 3.0;
+
+        /// <summary>Default height for the secondary title under the viewport.</summary>
+        public const double DefaultCenterTitleHeight = 5.0;
 
         /// <summary>List text style names in the drawing (for UI dropdowns).</summary>
         public static System.Collections.Generic.List<string> ListTextStyleNames(Database db)
@@ -259,7 +263,8 @@ namespace PrintLayoutAddin.Core
             SheetSetFieldKind kind,
             out string message,
             double textHeight = 0,
-            string textStyleName = null)
+            string textStyleName = null,
+            bool centerAligned = false)
         {
             message = "";
             if (db == null)
@@ -293,6 +298,13 @@ namespace PrintLayoutAddin.Core
                             TextString = spec.Placeholder,
                             LockPositionInBlock = true,
                         };
+                        if (centerAligned)
+                        {
+                            attDef.HorizontalMode = TextHorizontalMode.TextCenter;
+                            attDef.VerticalMode = TextVerticalMode.TextVerticalMid;
+                            attDef.AlignmentPoint = insertPoint;
+                            try { attDef.AdjustAlignment(db); } catch { }
+                        }
                         if (!styleId.IsNull)
                             attDef.TextStyleId = styleId;
                         space.AppendEntity(attDef);
@@ -304,20 +316,36 @@ namespace PrintLayoutAddin.Core
                         return true;
                     }
 
-                    var text = new DBText
-                    {
-                        Position = insertPoint,
-                        Height = height,
-                        TextString = spec.Placeholder,
-                    };
+                    var text = new DBText();
+                    text.SetDatabaseDefaults(db);
+                    text.Height = height;
+                    text.TextString = spec.Placeholder;
                     if (!styleId.IsNull)
                         text.TextStyleId = styleId;
+
+                    if (centerAligned)
+                    {
+                        // AlignmentPoint is ignored unless Position is set and AdjustAlignment runs.
+                        text.Position = insertPoint;
+                        text.HorizontalMode = TextHorizontalMode.TextCenter;
+                        text.VerticalMode = TextVerticalMode.TextVerticalMid;
+                        text.AlignmentPoint = insertPoint;
+                        try { text.AdjustAlignment(db); } catch { }
+                    }
+                    else
+                    {
+                        text.Position = insertPoint;
+                    }
+
                     space.AppendEntity(text);
                     tr.AddNewlyCreatedDBObject(text, true);
                     tr.Commit();
                     string where = db.TileMode ? "Model Space" : "this layout";
                     message =
-                        $"Created text '{spec.Placeholder}' in {where} (height {height:F2}). "
+                        $"Created text '{spec.Placeholder}' in {where} @ ({insertPoint.X:F2},{insertPoint.Y:F2})"
+                        + $" (height {height:F2}"
+                        + (centerAligned ? ", middle-center" : "")
+                        + "). "
                         + (db.TileMode
                             ? "Save this DWG and xref/reload it on host layouts."
                             : "For a shared title block, BEDIT the block or edit the xref source DWG.");
@@ -435,6 +463,169 @@ namespace PrintLayoutAddin.Core
             if (db.TileMode)
                 return "Model Space: convert DRAWING_* text to Sheet Set fields (xref title-block source).";
             return "This layout: convert DRAWING_* placeholders to Sheet Set fields.";
+        }
+
+        /// <summary>
+        /// Place DRAWING_* placeholders at the center of each label's line-bounded cell (method B).
+        /// Does not activate Sheet Set fields — use button 5 / Auto for that.
+        /// </summary>
+        public static bool PlaceFieldsNearScannedLabels(
+            Database db,
+            TitleBlockLabelScanner.ScanResult scan,
+            out string message,
+            double titleHeight = 0,
+            string titleStyle = null,
+            double numberHeight = 0,
+            string numberStyle = null,
+            double revisionHeight = 0,
+            string revisionStyle = null)
+        {
+            message = "";
+            if (db == null || scan == null)
+            {
+                message = "Nothing to place.";
+                return false;
+            }
+
+            var lines = new List<string>();
+            int ok = 0, fail = 0;
+            var search = scan.FullStrip;
+
+            void TryOne(TitleBlockLabelScanner.Hit hit, double ht, string style)
+            {
+                if (hit == null)
+                {
+                    lines.Add("skip (label not found)");
+                    return;
+                }
+
+                if (!TitleBlockLabelScanner.TryResolveCellCenter(
+                        db, hit, search, out var center, out var cell, out var cellDetail))
+                {
+                    fail++;
+                    lines.Add($"FAIL {hit.Kind}: no cell — {cellDetail}");
+                    return;
+                }
+
+                if (InsertFieldAtPoint(
+                        db, center, hit.Kind, out var msg, ht, style, centerAligned: true))
+                {
+                    ok++;
+                    lines.Add($"OK {hit.Kind}: {cellDetail} → {msg}");
+                }
+                else
+                {
+                    fail++;
+                    lines.Add($"FAIL {hit.Kind}: {msg}");
+                }
+            }
+
+            TryOne(scan.Title, titleHeight, titleStyle);
+            TryOne(scan.Number, numberHeight, numberStyle);
+            TryOne(scan.Revision, revisionHeight, revisionStyle);
+
+            message = $"Placed {ok} field(s)"
+                + (fail > 0 ? $", {fail} failed" : "")
+                + ".\n" + string.Join("\n", lines);
+            return ok > 0;
+        }
+
+        /// <summary>
+        /// Secondary drawing title at mid-bottom of the PLAYOUT viewport (CurrentSheetTitle).
+        /// </summary>
+        public static bool PlaceCenterTitle(
+            Database db,
+            ViewportCornerGeometry.Bounds viewport,
+            out string message,
+            double textHeight = 0,
+            string textStyleName = null)
+        {
+            double ht = textHeight > 1e-9 ? textHeight : DefaultCenterTitleHeight;
+            var pt = ViewportCornerGeometry.CenterTitlePoint(viewport, ht);
+            return InsertFieldAtPoint(
+                db, pt, SheetSetFieldKind.SheetTitle, out message, ht, textStyleName,
+                centerAligned: true);
+        }
+
+        /// <summary>
+        /// Auto Frame Setup: scan+place title-block fields, rev table at viewport top-right,
+        /// secondary center title, then activate Sheet Set field codes.
+        /// </summary>
+        public static bool RunAutoFrameSetup(
+            Database db,
+            ViewportCornerGeometry.Bounds viewport,
+            out string message,
+            double titleHeight = 0,
+            string titleStyle = null,
+            double centerTitleHeight = 0,
+            string centerTitleStyle = null,
+            double tableWidth = 0,
+            double headerTextHeight = 0,
+            double dataTextHeight = 0,
+            string headerStyleName = null,
+            string dataStyleName = null,
+            double numberHeight = 0,
+            string numberStyle = null,
+            double revisionHeight = 0,
+            string revisionStyle = null)
+        {
+            message = "";
+            if (db == null)
+            {
+                message = "Database is null.";
+                return false;
+            }
+
+            var lines = new List<string>();
+            lines.Add(ViewportCornerGeometry.Describe(viewport));
+            int okSteps = 0;
+            int softFails = 0;
+
+            double numHt = numberHeight > 1e-9 ? numberHeight : titleHeight;
+            string numStyle = !string.IsNullOrWhiteSpace(numberStyle) ? numberStyle : titleStyle;
+            double revHt = revisionHeight > 1e-9 ? revisionHeight : numHt;
+            string revStyle = !string.IsNullOrWhiteSpace(revisionStyle) ? revisionStyle : numStyle;
+
+            var scan = TitleBlockLabelScanner.Scan(db, viewport);
+            lines.Add(scan.Summarize());
+
+            bool fieldsOk = PlaceFieldsNearScannedLabels(
+                db, scan, out var fieldsMsg,
+                titleHeight, titleStyle,
+                numHt, numStyle,
+                revHt, revStyle);
+            lines.Add("--- Fields ---");
+            lines.Add(fieldsMsg ?? (fieldsOk ? "OK" : "Failed"));
+            if (fieldsOk) okSteps++; else softFails++;
+
+            var revAt = ViewportCornerGeometry.RevTableInsertPoint(viewport);
+            bool tableOk = InsertRevisionTable(
+                db, revAt, out var tableMsg,
+                tableWidth, headerTextHeight, dataTextHeight,
+                headerStyleName, dataStyleName,
+                skipIfExists: true);
+            lines.Add("--- Rev table @ (" + revAt.X.ToString("F1") + "," + revAt.Y.ToString("F1") + ") ---");
+            lines.Add(tableMsg ?? (tableOk ? "OK" : "Failed"));
+            if (tableOk) okSteps++; else softFails++;
+
+            double cHt = centerTitleHeight > 1e-9
+                ? centerTitleHeight
+                : (titleHeight > 1e-9 ? Math.Max(titleHeight * 2.0, DefaultCenterTitleHeight) : DefaultCenterTitleHeight);
+            bool centerOk = PlaceCenterTitle(
+                db, viewport, out var centerMsg, cHt, centerTitleStyle ?? titleStyle);
+            lines.Add("--- Center title ---");
+            lines.Add(centerMsg ?? (centerOk ? "OK" : "Failed"));
+            if (centerOk) okSteps++; else softFails++;
+
+            bool actOk = ActivateSheetSetFieldsOnPlaceholders(db, out var actMsg);
+            lines.Add("--- Activate ---");
+            lines.Add(actMsg ?? (actOk ? "OK" : "Failed"));
+            if (actOk) okSteps++; else softFails++;
+
+            message = $"Auto Frame Setup: {okSteps} step(s) ok"
+                + (softFails > 0 ? $", {softFails} issue(s)" : "")
+                + ".\n" + string.Join("\n", lines);
+            return okSteps > 0;
         }
 
         public static bool ApplySheetSetField(
@@ -564,7 +755,8 @@ namespace PrintLayoutAddin.Core
             double headerTextHeight = 0,
             double dataTextHeight = 0,
             string headerStyleName = null,
-            string dataStyleName = null)
+            string dataStyleName = null,
+            bool skipIfExists = false)
         {
             message = "";
             if (db == null)
@@ -596,6 +788,12 @@ namespace PrintLayoutAddin.Core
                     var space = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForWrite);
                     if (TableExistsOnLayer(space, tr, layerName))
                     {
+                        if (skipIfExists)
+                        {
+                            message =
+                                $"Skipped — Table on layer '{layerName}' already exists.";
+                            return true;
+                        }
                         message =
                             $"A Table on layer '{layerName}' already exists in this space. "
                             + "Delete it first if you want a new one.";

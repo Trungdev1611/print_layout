@@ -148,8 +148,16 @@ namespace PrintLayoutAddin
             }
             frames = frames.OrderBy(f => f.Stt, FrameScanner.SttComparer).ToList();
 
-            var corners = LoadViewportCorners();
-            bool needPick = !corners.HasValue;
+            string dwgPath = null;
+            try { dwgPath = doc.Name; } catch { }
+            var corners = ViewportCornerStore.Load(dwgPath);
+            if (!corners.HasValue)
+            {
+                ed.WriteMessage(
+                    "\nNo saved viewport corners for this drawing.\n"
+                    + "Open Title Block Setup, pick P1/P2 on the template layout, then run Build Layouts again.");
+                return;
+            }
 
             int created = 0, skipped = 0, errors = 0;
             DuplicateAction? rememberedAction = null;
@@ -209,20 +217,6 @@ namespace PrintLayoutAddin
                     // Viewport entity creation requires TILEMODE = 0 (paper space active).
                     // Switch current layout for every frame, not only when picking corners.
                     lm.CurrentLayout = name;
-
-                    if (needPick)
-                    {
-                        ZoomPaperSpaceExtents(doc, layoutId);
-                        var picked = PromptViewportCorners(ed);
-                        if (!picked.HasValue)
-                        {
-                            ed.WriteMessage("\nViewport pick cancelled. Command stopped.");
-                            return;
-                        }
-                        corners = picked;
-                        SaveViewportCorners(corners.Value);
-                        needPick = false;
-                    }
 
                     var diag = LayoutBuilder.AddViewport(db, layoutId, corners.Value.P1, corners.Value.P2, frame, vpLayer);
                     if (created == 0 && !string.IsNullOrEmpty(LayoutBuilder.LastLayerAction))
@@ -467,8 +461,221 @@ namespace PrintLayoutAddin
         {
             var doc = AcadApp.DocumentManager.MdiActiveDocument;
             if (doc == null) return;
-            ClearViewportCorners();
-            doc.Editor.WriteMessage("\nCleared the saved viewport corners. The next PLAYOUT run will prompt for them again.");
+            string dwgPath = null;
+            try { dwgPath = doc.Name; } catch { }
+
+            string normalized = ViewportCornerStore.TryNormalizePath(dwgPath);
+            if (normalized == null)
+            {
+                doc.Editor.WriteMessage(
+                    "\nSave the drawing first — viewport corners are stored per DWG file path.");
+                return;
+            }
+
+            if (ViewportCornerStore.Clear(dwgPath))
+            {
+                doc.Editor.WriteMessage(
+                    "\nCleared viewport corners for this drawing:\n  " + normalized
+                    + "\nPick P1/P2 again in Title Block Setup before Auto or Build Layouts.");
+            }
+            else
+            {
+                doc.Editor.WriteMessage(
+                    "\nNo saved viewport corners for this drawing:\n  " + normalized);
+            }
+        }
+
+        /// <summary>Diagnostic: print normalized viewport geometry from saved P1/P2 (step 2 check).</summary>
+        [CommandMethod("PLVPGEO")]
+        public void PlVpGeo()
+        {
+            var doc = AcadApp.DocumentManager.MdiActiveDocument;
+            if (doc == null) return;
+            var ed = doc.Editor;
+            string dwgPath = null;
+            try { dwgPath = doc.Name; } catch { }
+
+            var corners = ViewportCornerStore.Load(dwgPath);
+            if (!corners.HasValue)
+            {
+                ed.WriteMessage(
+                    "\nNo saved viewport corners for this DWG. Pick P1/P2 in Title Block Setup first.");
+                return;
+            }
+
+            var b = ViewportCornerGeometry.Normalize(corners.Value);
+            ed.WriteMessage("\n[PLVPGEO] " + ViewportCornerGeometry.Describe(b));
+            ed.WriteMessage(
+                "\n  raw P1=(" + corners.Value.P1.X.ToString("F2") + "," + corners.Value.P1.Y.ToString("F2")
+                + ") P2=(" + corners.Value.P2.X.ToString("F2") + "," + corners.Value.P2.Y.ToString("F2") + ")");
+        }
+
+        /// <summary>
+        /// Diagnostic (step 3): scan title-block labels from config, print hits, highlight found texts.
+        /// Requires saved P1/P2 (PLAYOUT) and Paper Space.
+        /// </summary>
+        [CommandMethod("PLFRAMESCAN")]
+        public void PlFrameScan()
+        {
+            var doc = AcadApp.DocumentManager.MdiActiveDocument;
+            if (doc == null) return;
+            var ed = doc.Editor;
+            var db = doc.Database;
+
+            if (db.TileMode)
+            {
+                ed.WriteMessage("\nSwitch to a paper-space layout, then run PLFRAMESCAN.");
+                return;
+            }
+
+            string dwgPath = null;
+            try { dwgPath = doc.Name; } catch { }
+            var corners = ViewportCornerStore.Load(dwgPath);
+            if (!corners.HasValue)
+            {
+                ed.WriteMessage(
+                    "\nNo saved viewport corners. Pick P1/P2 in Title Block Setup first, then PLFRAMESCAN.");
+                return;
+            }
+
+            var bounds = ViewportCornerGeometry.Normalize(corners.Value);
+            TitleBlockLabelScanner.ScanResult scan;
+            try
+            {
+                scan = TitleBlockLabelScanner.Scan(db, bounds);
+            }
+            catch (System.Exception ex)
+            {
+                ed.WriteMessage("\nPLFRAMESCAN failed: " + ex.Message);
+                return;
+            }
+
+            ed.WriteMessage("\n[PLFRAMESCAN] labels from config:");
+            ed.WriteMessage("\n  sheetTitleLabel    = " + (Config.Instance.SheetTitleLabel ?? ""));
+            ed.WriteMessage("\n  sheetNumberLabel   = " + (Config.Instance.SheetNumberLabel ?? ""));
+            ed.WriteMessage("\n  sheetRevisionLabel = " + (Config.Instance.SheetRevisionLabel ?? ""));
+            foreach (var line in (scan.Summarize() ?? "").Split('\n'))
+                ed.WriteMessage("\n" + line);
+
+            ed.WriteMessage("\n[PLFRAMESCAN] cell corners + place point (method B):");
+            foreach (var h in scan.Hits)
+            {
+                if (TitleBlockLabelScanner.TryResolveCellCenter(
+                        db, h, scan.FullStrip, out var placeAt, out var cell, out var detail))
+                {
+                    ed.WriteMessage("\n  --- " + h.Kind + " ---");
+                    ed.WriteMessage("\n    label@ (" + h.Position.X.ToString("F2") + "," + h.Position.Y.ToString("F2") + ")");
+                    ed.WriteMessage("\n    " + cell.FormatCorners());
+                    ed.WriteMessage(string.Format(
+                        "\n    place@ ({0:F2},{1:F2})  W={2:F2} H={3:F2}",
+                        placeAt.X, placeAt.Y, cell.Width, cell.Height));
+                }
+                else
+                {
+                    ed.WriteMessage("\n  " + h.Kind + ": NO CELL — " + detail);
+                }
+            }
+
+            var ids = new System.Collections.Generic.List<ObjectId>();
+            foreach (var h in scan.Hits)
+            {
+                if (!h.EntityId.IsNull && !h.EntityId.IsErased)
+                    ids.Add(h.EntityId);
+            }
+
+            if (ids.Count > 0)
+            {
+                try
+                {
+                    ed.SetImpliedSelection(ids.ToArray());
+                    ed.WriteMessage(
+                        "\nHighlighted " + ids.Count
+                        + " label text(s). Check grips/selection — then Esc to clear.");
+                }
+                catch (System.Exception ex)
+                {
+                    ed.WriteMessage("\nCould not highlight: " + ex.Message
+                        + " (nested block text may not select directly).");
+                }
+            }
+            else
+            {
+                ed.WriteMessage(
+                    "\nNo labels highlighted. Widen titleStripScanWidth or check Paper Space / config wording.");
+            }
+        }
+
+        /// <summary>
+        /// Step 3 place test: scan labels, find line-bounded cells, insert centered DRAWING_* placeholders.
+        /// </summary>
+        [CommandMethod("PLFRAMEPLACE")]
+        public void PlFramePlace()
+        {
+            var doc = AcadApp.DocumentManager.MdiActiveDocument;
+            if (doc == null) return;
+            var ed = doc.Editor;
+            var db = doc.Database;
+
+            if (db.TileMode)
+            {
+                ed.WriteMessage("\nSwitch to a paper-space layout, then run PLFRAMEPLACE.");
+                return;
+            }
+
+            string dwgPath = null;
+            try { dwgPath = doc.Name; } catch { }
+            var corners = ViewportCornerStore.Load(dwgPath);
+            if (!corners.HasValue)
+            {
+                ed.WriteMessage("\nNo saved viewport corners. Pick P1/P2 in Title Block Setup first.");
+                return;
+            }
+
+            var bounds = ViewportCornerGeometry.Normalize(corners.Value);
+            var scan = TitleBlockLabelScanner.Scan(db, bounds);
+            ed.WriteMessage("\n[PLFRAMEPLACE]\n" + scan.Summarize());
+
+            bool ok = TitleBlockSetupService.PlaceFieldsNearScannedLabels(
+                db, scan, out string message);
+            ed.WriteMessage("\n" + (message ?? (ok ? "Done." : "Failed.")));
+            if (ok)
+                ed.WriteMessage("\nTip: run button 5 / Activate later to link Sheet Set fields.");
+        }
+
+        /// <summary>
+        /// Auto Frame Setup: place title fields, rev table, center title, activate Sheet Set.
+        /// </summary>
+        [CommandMethod("PLFRAMEAUTO")]
+        public void PlFrameAuto()
+        {
+            var doc = AcadApp.DocumentManager.MdiActiveDocument;
+            if (doc == null) return;
+            var ed = doc.Editor;
+            var db = doc.Database;
+
+            if (db.TileMode)
+            {
+                ed.WriteMessage("\nSwitch to a paper-space layout, then run PLFRAMEAUTO.");
+                return;
+            }
+
+            string dwgPath = null;
+            try { dwgPath = doc.Name; } catch { }
+            var corners = ViewportCornerStore.Load(dwgPath);
+            if (!corners.HasValue)
+            {
+                ed.WriteMessage("\nNo saved viewport corners. Pick P1/P2 in Title Block Setup first.");
+                return;
+            }
+
+            var bounds = ViewportCornerGeometry.Normalize(corners.Value);
+            bool ok;
+            string message;
+            using (doc.LockDocument())
+            {
+                ok = TitleBlockSetupService.RunAutoFrameSetup(db, bounds, out message);
+            }
+            ed.WriteMessage("\n[PLFRAMEAUTO]\n" + (message ?? (ok ? "Done." : "Failed.")));
         }
 
         [CommandMethod("PLPRINT")]
@@ -898,79 +1105,8 @@ namespace PrintLayoutAddin
             catch { /* non-fatal: user can zoom manually */ }
         }
 
-        private static (Point3d P1, Point3d P2)? PromptViewportCorners(Editor ed)
-        {
-            ed.WriteMessage("\nPick 2 viewport corners (one-time — addin will reuse for subsequent layouts).");
-            var p1opt = new PromptPointOptions("\nSpecify first viewport corner: ")
-            {
-                AllowNone = false
-            };
-            var p1res = ed.GetPoint(p1opt);
-            if (p1res.Status != PromptStatus.OK) return null;
-
-            var p2opt = new PromptCornerOptions("\nSpecify opposite viewport corner: ", p1res.Value);
-            var p2res = ed.GetCorner(p2opt);
-            if (p2res.Status != PromptStatus.OK) return null;
-
-            return (p1res.Value, p2res.Value);
-        }
-
-        private static (Point3d P1, Point3d P2)? LoadViewportCorners()
-        {
-            try
-            {
-                using (var k = Registry.CurrentUser.OpenSubKey(RegKey))
-                {
-                    if (k == null) return null;
-                    if (!TryGetDouble(k, "VpX1", out var x1)) return null;
-                    if (!TryGetDouble(k, "VpY1", out var y1)) return null;
-                    if (!TryGetDouble(k, "VpX2", out var x2)) return null;
-                    if (!TryGetDouble(k, "VpY2", out var y2)) return null;
-                    return (new Point3d(x1, y1, 0), new Point3d(x2, y2, 0));
-                }
-            }
-            catch { return null; }
-        }
-
-        private static bool TryGetDouble(Microsoft.Win32.RegistryKey k, string name, out double v)
-        {
-            v = 0;
-            var o = k.GetValue(name);
-            if (o == null) return false;
-            return double.TryParse(o.ToString(), NumberStyles.Any, CultureInfo.InvariantCulture, out v);
-        }
-
-        private static void SaveViewportCorners((Point3d P1, Point3d P2) c)
-        {
-            try
-            {
-                using (var k = Registry.CurrentUser.CreateSubKey(RegKey))
-                {
-                    if (k == null) return;
-                    k.SetValue("VpX1", c.P1.X.ToString("R", CultureInfo.InvariantCulture));
-                    k.SetValue("VpY1", c.P1.Y.ToString("R", CultureInfo.InvariantCulture));
-                    k.SetValue("VpX2", c.P2.X.ToString("R", CultureInfo.InvariantCulture));
-                    k.SetValue("VpY2", c.P2.Y.ToString("R", CultureInfo.InvariantCulture));
-                }
-            }
-            catch { }
-        }
-
-        private static void ClearViewportCorners()
-        {
-            try
-            {
-                using (var k = Registry.CurrentUser.CreateSubKey(RegKey))
-                {
-                    if (k == null) return;
-                    k.DeleteValue("VpX1", false);
-                    k.DeleteValue("VpY1", false);
-                    k.DeleteValue("VpX2", false);
-                    k.DeleteValue("VpY2", false);
-                }
-            }
-            catch { }
-        }
+        private static (Point3d P1, Point3d P2)? PromptViewportCorners(Editor ed) =>
+            ViewportCornerPicker.TryPrompt(ed, out var c) ? c : ((Point3d, Point3d)?)null;
 
         private static string UniqueLayoutName(Autodesk.AutoCAD.DatabaseServices.LayoutManager lm, string baseName)
         {

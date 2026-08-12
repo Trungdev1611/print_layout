@@ -33,6 +33,33 @@ namespace PrintLayoutAddin.Core
         /// </summary>
         public bool AutoSheetSetAfterLayout { get; set; } = true;
 
+        /// <summary>
+        /// Width (paper units) of the title-strip scan box to the right of the viewport
+        /// used by Auto Frame Setup (X_max → X_max + width, lower half only).
+        /// </summary>
+        public const double DefaultTitleStripScanWidth = 200.0;
+        public double TitleStripScanWidth { get; set; } = DefaultTitleStripScanWidth;
+
+        /// <summary>
+        /// Paper-space label text to find for Sheet Title (matched case-insensitive;
+        /// trailing ':' optional). Override in config.json if the title block wording differs.
+        /// </summary>
+        public const string DefaultSheetTitleLabel = "TÊN BẢN VẼ";
+        public string SheetTitleLabel { get; set; } = DefaultSheetTitleLabel;
+
+        /// <summary>
+        /// Paper-space label text to find for Sheet Number.
+        /// </summary>
+        public const string DefaultSheetNumberLabel = "SỐ HIỆU BẢN VẼ";
+        public string SheetNumberLabel { get; set; } = DefaultSheetNumberLabel;
+
+        /// <summary>
+        /// Paper-space label for Sheet Revision (e.g. PHIÊN BẢN). Scanned in the
+        /// mid band of the title strip so it does not collide with the Rev table at Y_max.
+        /// </summary>
+        public const string DefaultSheetRevisionLabel = "PHIÊN BẢN";
+        public string SheetRevisionLabel { get; set; } = DefaultSheetRevisionLabel;
+
         private static Config _instance;
 
         public static Config Instance => _instance ?? (_instance = Load());
@@ -60,6 +87,13 @@ namespace PrintLayoutAddin.Core
                 var autoDst = ExtractBool(json, "autoSheetSetAfterLayout");
                 if (autoDst.HasValue)
                     cfg.AutoSheetSetAfterLayout = autoDst.Value;
+
+                var scanW = ExtractDouble(json, "titleStripScanWidth");
+                if (scanW.HasValue && scanW.Value > 0)
+                    cfg.TitleStripScanWidth = scanW.Value;
+                cfg.SheetTitleLabel = ExtractString(json, "sheetTitleLabel") ?? cfg.SheetTitleLabel;
+                cfg.SheetNumberLabel = ExtractString(json, "sheetNumberLabel") ?? cfg.SheetNumberLabel;
+                cfg.SheetRevisionLabel = ExtractString(json, "sheetRevisionLabel") ?? cfg.SheetRevisionLabel;
             }
             catch
             {
@@ -79,6 +113,18 @@ namespace PrintLayoutAddin.Core
             var m = Regex.Match(json, "\"" + Regex.Escape(key) + "\"\\s*:\\s*(-?\\d+)");
             if (!m.Success) return null;
             if (int.TryParse(m.Groups[1].Value, out var n)) return n;
+            return null;
+        }
+
+        private static double? ExtractDouble(string json, string key)
+        {
+            var m = Regex.Match(json, "\"" + Regex.Escape(key) + "\"\\s*:\\s*(-?\\d+(?:\\.\\d+)?)");
+            if (!m.Success) return null;
+            if (double.TryParse(m.Groups[1].Value,
+                    System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    out var n))
+                return n;
             return null;
         }
 

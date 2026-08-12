@@ -7,5 +7,10 @@
   "sheetSetFolderName": "sheetset_manager",
   "revTableLayer": "TITLE_BLOCK_REV_TABLE",
   "revTableDataRows": 4,
-  "autoSheetSetAfterLayout": true
+  "autoSheetSetAfterLayout": true,
+
+  "titleStripScanWidth": 200,
+  "sheetTitleLabel": "TÊN BẢN VẼ",
+  "sheetNumberLabel": "SỐ HIỆU BẢN VẼ",
+  "sheetRevisionLabel": "PHIÊN BẢN"
 }
