@@ -8,7 +8,9 @@ namespace PrintLayoutAddin.Core
 {
     /// <summary>
     /// Command-line + file log for sheet-set operations (auto after PLAYOUT, PLSHEETSET dialog, COM failures).
-    /// File: <c>{sheetset_manager}/pl_sheetset_auto.log</c> next to the DWG (or next to the .dst).
+    /// File: <c>{dwgDir}/pl_sheetset_auto.log</c> (same folder as the DWG). Does not create
+    /// <c>sheetset_manager</c> — that folder is only for .dst / PDF when those are written.
+    /// Fallback: directory of <paramref name="dstPath"/>, else Documents.
     /// </summary>
     public static class SheetSetAutoLog
     {
@@ -19,8 +21,7 @@ namespace PrintLayoutAddin.Core
 
         /// <summary>
         /// Pass <paramref name="dstPath"/> whenever the caller has no dwgPath: without it the
-        /// line lands in the fallback log under Documents instead of the one next to the .dst,
-        /// which is how a stack trace naming the real failing AcSm call went unnoticed.
+        /// line lands in the fallback log under Documents instead of next to the DWG / .dst.
         /// </summary>
         public static void WriteTagged(
             Editor ed, string dwgPath, string tag, string message, string dstPath = null)
@@ -116,11 +117,14 @@ namespace PrintLayoutAddin.Core
 
         private static string ResolveLogFolder(string dwgPath, string dstPath)
         {
+            // Prefer the DWG directory (same level as the drawing — no sheetset_manager).
             if (!string.IsNullOrWhiteSpace(dwgPath))
             {
                 try
                 {
-                    return PublishPaths.GetFolder(dwgPath, create: true);
+                    var dir = Path.GetDirectoryName(dwgPath);
+                    if (!string.IsNullOrWhiteSpace(dir))
+                        return dir;
                 }
                 catch { }
             }
@@ -136,9 +140,7 @@ namespace PrintLayoutAddin.Core
                 catch { }
             }
 
-            return Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
-                Config.Instance.SheetSetFolderName ?? Config.DefaultSheetSetFolderName);
+            return Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
         }
     }
 }

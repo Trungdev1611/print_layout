@@ -178,19 +178,19 @@ namespace PrintLayoutAddin.UI
             };
             _grid.Columns.Add(new DataGridViewTextBoxColumn
             {
-                HeaderText = "Rev No",
+                HeaderText = "Lần nộp",
                 DataPropertyName = nameof(RevisionItem.RevNo),
                 Width = 80,
             });
             _grid.Columns.Add(new DataGridViewTextBoxColumn
             {
-                HeaderText = "Description",
+                HeaderText = "Nội dung điều chỉnh",
                 DataPropertyName = nameof(RevisionItem.Description),
                 AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill,
             });
             _grid.Columns.Add(new CalendarColumn
             {
-                HeaderText = "Date",
+                HeaderText = "Ngày nộp",
                 DataPropertyName = nameof(RevisionItem.Date),
                 Width = 120,
             });

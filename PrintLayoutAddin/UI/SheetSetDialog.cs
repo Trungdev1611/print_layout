@@ -250,8 +250,8 @@ namespace PrintLayoutAddin.UI
                 RowCount = 3,
             };
             panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 105));
-            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 35));
-            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 65));
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 0));
             panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
             panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
             panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
@@ -260,6 +260,7 @@ namespace PrintLayoutAddin.UI
             panel.Controls.Add(LabelFor("Sheet set name"), 0, 0);
             _nameBox = new TextBox { Dock = DockStyle.Fill };
             panel.Controls.Add(_nameBox, 1, 0);
+            panel.SetColumnSpan(_nameBox, 2);
 
             panel.Controls.Add(LabelFor("DST file"), 0, 1);
             _pathBox = new TextBox
@@ -270,9 +271,6 @@ namespace PrintLayoutAddin.UI
             };
             panel.Controls.Add(_pathBox, 1, 1);
             panel.SetColumnSpan(_pathBox, 3);
-
-            var legend = BuildSubsetLevelLegend();
-            panel.Controls.Add(legend, 2, 0);
 
             var importBtn = new Button
             {
@@ -289,16 +287,9 @@ namespace PrintLayoutAddin.UI
             importBtn.Click += (s, e) => StartImport();
             panel.Controls.Add(importBtn, 3, 0);
 
-            var fieldHint = new Label
-            {
-                Text = "Title block: CurrentSheetNumber / CurrentSheetTitle / CurrentSheetRevisionNumber. "
-                    + "Rev history: Table on layer TITLE_BLOCK_REV_TABLE; click 'Rev history' to edit.",
-                Dock = DockStyle.Fill,
-                ForeColor = Color.FromArgb(45, 95, 150),
-                TextAlign = ContentAlignment.MiddleLeft,
-            };
-            panel.Controls.Add(fieldHint, 0, 2);
-            panel.SetColumnSpan(fieldHint, 4);
+            var legend = BuildSubsetLevelLegend();
+            panel.Controls.Add(legend, 0, 2);
+            panel.SetColumnSpan(legend, 4);
             return panel;
         }
 
@@ -451,7 +442,7 @@ namespace PrintLayoutAddin.UI
             _grid.Columns.Add(new DataGridViewTextBoxColumn
             {
                 Name = "RevHistory",
-                HeaderText = "Rev history (click)",
+                HeaderText = "Notes",
                 DataPropertyName = nameof(SheetSetEntry.LastRevisionSummary),
                 ReadOnly = true,
                 FillWeight = 18,
@@ -654,8 +645,13 @@ namespace PrintLayoutAddin.UI
             try
             {
                 initialDir = Path.GetDirectoryName(_pathBox.Text);
-                if (!Directory.Exists(initialDir))
-                    initialDir = PublishPaths.GetFolder(_dwgPath);
+                if (string.IsNullOrWhiteSpace(initialDir) || !Directory.Exists(initialDir))
+                {
+                    var publish = PublishPaths.GetFolder(_dwgPath, create: false);
+                    initialDir = Directory.Exists(publish)
+                        ? publish
+                        : Path.GetDirectoryName(_dwgPath);
+                }
             }
             catch { }
 
@@ -723,8 +719,13 @@ namespace PrintLayoutAddin.UI
             try
             {
                 initialDir = Path.GetDirectoryName(_pathBox.Text);
-                if (!Directory.Exists(initialDir))
-                    initialDir = PublishPaths.GetFolder(_dwgPath);
+                if (string.IsNullOrWhiteSpace(initialDir) || !Directory.Exists(initialDir))
+                {
+                    var publish = PublishPaths.GetFolder(_dwgPath, create: false);
+                    initialDir = Directory.Exists(publish)
+                        ? publish
+                        : Path.GetDirectoryName(_dwgPath);
+                }
             }
             catch { }
 
@@ -989,7 +990,7 @@ namespace PrintLayoutAddin.UI
                 };
                 var folderBtn = new Button
                 {
-                    Text = "Folder tree…",
+                    Text = "Folder…",
                     Left = 12,
                     Top = 50,
                     Width = 180,
@@ -998,7 +999,7 @@ namespace PrintLayoutAddin.UI
                 };
                 var filesBtn = new Button
                 {
-                    Text = "Drawing files (.dwg/.dwt)…",
+                    Text = "Files…",
                     Left = 208,
                     Top = 50,
                     Width = 180,

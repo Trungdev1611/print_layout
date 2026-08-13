@@ -6,12 +6,16 @@ namespace PrintLayoutAddin.Core
     /// <summary>
     /// Shared default locations for Sheet Set (.dst) and PDF export.
     /// Both land in <c>{dwgDir}/sheetset_manager/</c> (name configurable).
-    /// The folder is created when missing; existing files are left alone
-    /// (new writes only add/overwrite the target file).
+    /// Path helpers do <b>not</b> create the folder — callers that write a file
+    /// must call <see cref="EnsureFolder"/> (or create the parent of the file path).
     /// </summary>
     public static class PublishPaths
     {
-        public static string GetFolder(string dwgPath, bool create = true)
+        /// <summary>
+        /// Returns the default publish folder path. Does not create it unless
+        /// <paramref name="create"/> is true (prefer false for path-only / dialog open).
+        /// </summary>
+        public static string GetFolder(string dwgPath, bool create = false)
         {
             string dir = null;
             try
@@ -30,21 +34,26 @@ namespace PrintLayoutAddin.Core
 
             var folder = Path.Combine(dir, folderName.Trim());
             if (create)
-            {
-                try { Directory.CreateDirectory(folder); }
-                catch { /* caller may surface IO errors later */ }
-            }
+                EnsureFolder(folder);
             return folder;
+        }
+
+        /// <summary>Create <paramref name="folder"/> when missing (write sites only).</summary>
+        public static void EnsureFolder(string folder)
+        {
+            if (string.IsNullOrWhiteSpace(folder)) return;
+            try { Directory.CreateDirectory(folder); }
+            catch { /* caller may surface IO errors later */ }
         }
 
         public static string DefaultDstPath(string dwgPath)
         {
-            return Path.Combine(GetFolder(dwgPath), BaseName(dwgPath) + ".dst");
+            return Path.Combine(GetFolder(dwgPath, create: false), BaseName(dwgPath) + ".dst");
         }
 
         public static string DefaultPdfPath(string dwgPath)
         {
-            return Path.Combine(GetFolder(dwgPath), BaseName(dwgPath) + "_layout.pdf");
+            return Path.Combine(GetFolder(dwgPath, create: false), BaseName(dwgPath) + "_layout.pdf");
         }
 
         /// <summary>

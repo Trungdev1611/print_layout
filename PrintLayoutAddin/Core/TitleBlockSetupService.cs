@@ -685,6 +685,12 @@ namespace PrintLayoutAddin.Core
             }
         }
 
+        /// <summary>
+        /// When creating <see cref="Config.RevTableLayer"/>, copy visual props from this
+        /// title-block layer if it exists (name stays TITLE_BLOCK_REV_TABLE).
+        /// </summary>
+        public const string RevTableLayerStyleSource = "360D-Khungten";
+
         public static bool EnsureRevTableLayer(Database db, out string message)
         {
             message = "";
@@ -719,9 +725,14 @@ namespace PrintLayoutAddin.Core
                             existing.IsFrozen = false;
                             touched = true;
                         }
+                        if (existing.IsOff)
+                        {
+                            existing.IsOff = false;
+                            touched = true;
+                        }
                         tr.Commit();
                         message = touched
-                            ? $"Layer '{layerName}' already exists (unlocked / unfrozen / plottable)."
+                            ? $"Layer '{layerName}' already exists (unlocked / unfrozen / on / plottable)."
                             : $"Layer '{layerName}' already exists.";
                         return true;
                     }
@@ -733,10 +744,25 @@ namespace PrintLayoutAddin.Core
                         Color = Color.FromColorIndex(ColorMethod.ByAci, 7),
                         IsPlottable = true,
                     };
+
+                    string styleNote = "color 7, plottable";
+                    if (lt.Has(RevTableLayerStyleSource))
+                    {
+                        var source = (LayerTableRecord)tr.GetObject(
+                            lt[RevTableLayerStyleSource], OpenMode.ForRead);
+                        CopyLayerVisualProps(source, rec);
+                        // Always usable for insert/plot — do not inherit Off/Frozen/Locked/NoPlot.
+                        rec.IsOff = false;
+                        rec.IsFrozen = false;
+                        rec.IsLocked = false;
+                        rec.IsPlottable = true;
+                        styleNote = "extends '" + RevTableLayerStyleSource + "' (plottable, on)";
+                    }
+
                     lt.Add(rec);
                     tr.AddNewlyCreatedDBObject(rec, true);
                     tr.Commit();
-                    message = $"Created layer '{layerName}' (color 7, plottable).";
+                    message = $"Created layer '{layerName}' ({styleNote}).";
                     return true;
                 }
             }
@@ -745,6 +771,28 @@ namespace PrintLayoutAddin.Core
                 message = ex.Message;
                 return false;
             }
+        }
+
+        /// <summary>
+        /// Copy display/style props from <paramref name="source"/> onto a new layer record.
+        /// Does not copy name or Off/Frozen/Locked (caller forces those).
+        /// </summary>
+        private static void CopyLayerVisualProps(LayerTableRecord source, LayerTableRecord dest)
+        {
+            if (source == null || dest == null) return;
+            try { dest.Color = source.Color; } catch { }
+            try { dest.LinetypeObjectId = source.LinetypeObjectId; } catch { }
+            try { dest.LineWeight = source.LineWeight; } catch { }
+            try { dest.Description = source.Description ?? ""; } catch { }
+            try { dest.Transparency = source.Transparency; } catch { }
+            try { dest.ViewportVisibilityDefault = source.ViewportVisibilityDefault; } catch { }
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(source.PlotStyleName))
+                    dest.PlotStyleName = source.PlotStyleName;
+            }
+            catch { }
+            try { dest.IsPlottable = source.IsPlottable; } catch { }
         }
 
         public static bool InsertRevisionTable(
@@ -864,9 +912,9 @@ namespace PrintLayoutAddin.Core
             for (int r = 1; r < rows; r++)
                 table.Rows[r].Height = dataRowH;
 
-            SetHeaderCell(table, 0, RevisionTableService.ColRevNo, "Rev", headerHt, headerStyleId);
-            SetHeaderCell(table, 0, RevisionTableService.ColDescription, "Description", headerHt, headerStyleId);
-            SetHeaderCell(table, 0, RevisionTableService.ColDate, "Date", headerHt, headerStyleId);
+            SetHeaderCell(table, 0, RevisionTableService.ColRevNo, "Lần nộp", headerHt, headerStyleId);
+            SetHeaderCell(table, 0, RevisionTableService.ColDescription, "Nội dung điều chỉnh", headerHt, headerStyleId);
+            SetHeaderCell(table, 0, RevisionTableService.ColDate, "Ngày nộp", headerHt, headerStyleId);
 
             for (int r = 1; r < rows; r++)
             {
