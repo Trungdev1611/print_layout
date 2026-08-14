@@ -18,7 +18,6 @@ namespace PrintLayoutAddin.UI
         private const string RegKey = @"Software\PrintLayoutAddin\SheetSet";
 
         private readonly string _dwgPath;
-        private readonly string _fixedDstPath;
         private readonly IDictionary<string, string> _drawingNames;
         private readonly List<PrintableLayout> _layouts;
         private readonly BindingList<SheetSetEntry> _entries;
@@ -29,7 +28,18 @@ namespace PrintLayoutAddin.UI
         private Label _status;
         private Button _createBtn;
         private Button _exportBtn;
+        private Button _refreshBtn;
         private CheckBox _openSsmChk;
+        private Label _fieldHint;
+        private readonly ToolTip _tips = new ToolTip();
+
+        private const string BaseTitle = "Create Sheet Set";
+
+        /// <summary>Table edits made since the last successful DST write / reload.</summary>
+        private bool _dirty;
+
+        /// <summary>Nesting counter — programmatic reloads must not look like user edits.</summary>
+        private int _suspendDirty;
 
         public List<PrintableLayout> ExportLayouts { get; private set; }
 
@@ -42,13 +52,9 @@ namespace PrintLayoutAddin.UI
             _dwgPath = dwgPath;
             _drawingNames = drawingNames;
             _layouts = (layouts ?? Enumerable.Empty<PrintableLayout>()).ToList();
-            _fixedDstPath = string.IsNullOrWhiteSpace(defaultDstPath)
-                ? PublishPaths.DefaultDstPath(dwgPath)
-                : defaultDstPath;
-
             _entries = new BindingList<SheetSetEntry>();
 
-            Text = "Create Sheet Set";
+            Text = BaseTitle;
             Width = 1050;
             Height = 680;
             MinimumSize = new Size(850, 560);
@@ -57,86 +63,128 @@ namespace PrintLayoutAddin.UI
             MaximizeBox = true;
 
             BuildUi();
-            var sheetSetName = ReloadFromDstOrModel();
-            ApplyFixedPath(_fixedDstPath, sheetSetName);
+            ApplySuggestedPath("", Path.GetFileNameWithoutExtension(_dwgPath ?? "") ?? "SheetSet");
+            SeedFromLayouts();
+            ClearDirty();
             ValidateUi();
         }
 
+        // ---------------------------------------------------------------- unsaved-changes tracking
+
         /// <summary>
-        /// Rebuilds the table from DST (subset headers + sheets) when present;
+        /// Marks the table as edited-but-not-written. Only data that ends up in the DST counts —
+        /// the row checkbox, Export Excel and the "open SSM" preference deliberately do not.
+        /// </summary>
+        private void MarkDirty()
+        {
+            if (_suspendDirty > 0 || _dirty) return;
+            _dirty = true;
+            UpdateDirtyTitle();
+        }
+
+        /// <summary>Table now matches the DST on disk (written, reloaded, or freshly seeded).</summary>
+        private void ClearDirty()
+        {
+            if (!_dirty) { UpdateDirtyTitle(); return; }
+            _dirty = false;
+            UpdateDirtyTitle();
+        }
+
+        private void UpdateDirtyTitle()
+        {
+            Text = _dirty ? BaseTitle + " *" : BaseTitle;
+        }
+
+        private IDisposable SuspendDirtyTracking()
+        {
+            _suspendDirty++;
+            return new DirtyScope(this);
+        }
+
+        private sealed class DirtyScope : IDisposable
+        {
+            private readonly SheetSetDialog _owner;
+            private bool _done;
+            public DirtyScope(SheetSetDialog owner) { _owner = owner; }
+            public void Dispose()
+            {
+                if (_done) return;
+                _done = true;
+                if (_owner._suspendDirty > 0) _owner._suspendDirty--;
+            }
+        }
+
+        /// <summary>
+        /// Gate in front of anything that replaces the table with file content
+        /// (Refresh from DST, Browse to an existing .dst). Returns false to stay put.
+        /// </summary>
+        private bool ConfirmDiscardTableEdits(string title)
+        {
+            CommitGrid();
+            if (!_dirty) return true;
+
+            return MessageBox.Show(
+                this,
+                "The table has changes that were never written to the DST.\n\n"
+                + "Loading the file replaces the table and discards them.\n\n"
+                + "Continue?",
+                title,
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning) == DialogResult.Yes;
+        }
+
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            // The Export path already asked its own question and set DialogResult.OK —
+            // asking again here would be a second box for the same decision.
+            bool ask = _dirty
+                && DialogResult != DialogResult.OK
+                && (e.CloseReason == CloseReason.UserClosing
+                    || e.CloseReason == CloseReason.None);
+
+            if (ask)
+            {
+                var answer = MessageBox.Show(
+                    this,
+                    "The table has not been written to the DST.\n\n"
+                    + "Closing now discards the changes made in this table.\n\n"
+                    + "Close anyway?",
+                    BaseTitle,
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Warning);
+                if (answer != DialogResult.Yes)
+                {
+                    e.Cancel = true;
+                    // The Close button already set Cancel; reset it or ShowDialog stays armed.
+                    DialogResult = DialogResult.None;
+                }
+            }
+
+            base.OnFormClosing(e);
+        }
+
+        /// <summary>
+        /// Rebuilds the table from the DST at the current path when that file exists;
         /// otherwise seeds from model layouts / drawing-name attributes.
-        /// When DST has content, the grid mirrors it only (no auto-append of
-        /// local layouts missing from the DST).
+        /// Opening the dialog never auto-reads a DST — use Browse… / Refresh.
         /// </summary>
         private string ReloadFromDstOrModel()
         {
-            _entries.RaiseListChangedEvents = false;
-            _entries.Clear();
-
-            string sheetSetName = Path.GetFileNameWithoutExtension(_dwgPath ?? "") ?? "SheetSet";
-            var layoutByName = _layouts
-                .Where(l => l != null && !string.IsNullOrWhiteSpace(l.Name))
-                .GroupBy(l => l.Name, StringComparer.OrdinalIgnoreCase)
-                .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
-
-            var existing = SheetSetService.TryRead(_fixedDstPath);
-
-            if (existing != null && existing.Nodes.Count > 0)
+            var path = CurrentDstPath();
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
             {
-                if (!string.IsNullOrWhiteSpace(existing.SheetSetName))
-                    sheetSetName = existing.SheetSetName;
-
-                foreach (var node in existing.Nodes)
-                {
-                    if (node == null) continue;
-                    if (node.Kind == SheetSetRowKind.Subset)
-                    {
-                        _entries.Add(new SheetSetEntry
-                        {
-                            Kind = SheetSetRowKind.Subset,
-                            Include = false,
-                            SubsetName = node.SubsetName ?? node.Title,
-                            SubsetLevel = Math.Max(1, node.SubsetLevel),
-                            Title = node.Title ?? node.SubsetName,
-                            SheetNumber = "",
-                            DwgPath = _dwgPath,
-                        });
-                        continue;
-                    }
-
-                    layoutByName.TryGetValue(node.LayoutName ?? "", out var layout);
-
-                    string dwgPath = !string.IsNullOrWhiteSpace(node.DwgPath)
-                        ? node.DwgPath
-                        : _dwgPath;
-                    if (layout == null && !string.IsNullOrWhiteSpace(node.LayoutName))
-                        layout = new PrintableLayout { Name = node.LayoutName };
-
-                    _entries.Add(new SheetSetEntry
-                    {
-                        Kind = SheetSetRowKind.Sheet,
-                        Include = layout != null && !string.IsNullOrWhiteSpace(dwgPath),
-                        SubsetName = node.SubsetName,
-                        SubsetLevel = Math.Max(0, node.SubsetLevel),
-                        SheetNumber = !string.IsNullOrWhiteSpace(node.Number)
-                            ? node.Number
-                            : (node.LayoutName ?? ""),
-                        Title = !string.IsNullOrWhiteSpace(node.Title)
-                            ? node.Title
-                            : ResolveDrawingName(node.LayoutName),
-                        Revision = node.Revision ?? "",
-                        DwgPath = dwgPath,
-                        Layout = layout,
-                    });
-                }
-
-                // Do not re-append local DWG layouts missing from the DST — that undoes
-                // intentional sheet deletes after Create/Update (SSM stays correct while
-                // this grid would resurrect them on Refresh / reopen).
-                SetStatus("Loaded from DST (subsets mirrored for display).", false);
+                SeedFromLayouts();
+                return _nameBox?.Text;
             }
-            else
+            return LoadFromDstFile(path);
+        }
+
+        private void SeedFromLayouts()
+        {
+            using (SuspendDirtyTracking())
             {
+                _entries.RaiseListChangedEvents = false;
+                _entries.Clear();
                 foreach (var layout in _layouts)
                 {
                     if (layout == null) continue;
@@ -151,13 +199,97 @@ namespace PrintLayoutAddin.UI
                         Layout = layout,
                     });
                 }
-                SetStatus(
-                    existing == null
-                        ? "No DST yet — seeded from layout STT / drawing-name attributes."
-                        : "DST has no sheets — seeded from model.",
-                    false);
+                FinishGridReload();
+            }
+            SetStatus("No DST loaded — seeded from layout STT / drawing-name attributes.", false);
+        }
+
+        private string LoadFromDstFile(string dstPath)
+        {
+            using (SuspendDirtyTracking())
+                return LoadFromDstFileCore(dstPath);
+        }
+
+        private string LoadFromDstFileCore(string dstPath)
+        {
+            _entries.RaiseListChangedEvents = false;
+            _entries.Clear();
+
+            string sheetSetName = Path.GetFileNameWithoutExtension(_dwgPath ?? "") ?? "SheetSet";
+            var layoutByName = _layouts
+                .Where(l => l != null && !string.IsNullOrWhiteSpace(l.Name))
+                .GroupBy(l => l.Name, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+
+            var existing = SheetSetService.TryRead(dstPath);
+            if (existing == null)
+            {
+                SeedFromLayouts();
+                SetStatus("Could not read DST — seeded from layouts.", true);
+                return _nameBox?.Text;
             }
 
+            if (!string.IsNullOrWhiteSpace(existing.SheetSetName))
+                sheetSetName = existing.SheetSetName;
+
+            if (existing.Nodes.Count == 0)
+            {
+                FinishGridReload();
+                SetStatus("DST has no sheets.", false);
+                return sheetSetName;
+            }
+
+            foreach (var node in existing.Nodes)
+            {
+                if (node == null) continue;
+                if (node.Kind == SheetSetRowKind.Subset)
+                {
+                    _entries.Add(new SheetSetEntry
+                    {
+                        Kind = SheetSetRowKind.Subset,
+                        Include = false,
+                        SubsetName = node.SubsetName ?? node.Title,
+                        SubsetLevel = Math.Max(1, node.SubsetLevel),
+                        Title = node.Title ?? node.SubsetName,
+                        SheetNumber = "",
+                        DwgPath = _dwgPath,
+                    });
+                    continue;
+                }
+
+                layoutByName.TryGetValue(node.LayoutName ?? "", out var layout);
+
+                string dwgPath = !string.IsNullOrWhiteSpace(node.DwgPath)
+                    ? node.DwgPath
+                    : _dwgPath;
+                if (layout == null && !string.IsNullOrWhiteSpace(node.LayoutName))
+                    layout = new PrintableLayout { Name = node.LayoutName };
+
+                _entries.Add(new SheetSetEntry
+                {
+                    Kind = SheetSetRowKind.Sheet,
+                    Include = layout != null && !string.IsNullOrWhiteSpace(dwgPath),
+                    SubsetName = node.SubsetName,
+                    SubsetLevel = Math.Max(0, node.SubsetLevel),
+                    SheetNumber = !string.IsNullOrWhiteSpace(node.Number)
+                        ? node.Number
+                        : (node.LayoutName ?? ""),
+                    Title = !string.IsNullOrWhiteSpace(node.Title)
+                        ? node.Title
+                        : ResolveDrawingName(node.LayoutName),
+                    Revision = node.Revision ?? "",
+                    DwgPath = dwgPath,
+                    Layout = layout,
+                });
+            }
+
+            FinishGridReload();
+            SetStatus("Loaded from DST (subsets mirrored for display).", false);
+            return sheetSetName;
+        }
+
+        private void FinishGridReload()
+        {
             _entries.RaiseListChangedEvents = true;
             RefreshOrders();
             ApplyRevisionSummaries();
@@ -165,7 +297,6 @@ namespace PrintLayoutAddin.UI
             _source.DataSource = _entries;
             _source.ResetBindings(false);
             ApplyRowStyles();
-            return sheetSetName;
         }
 
         /// <summary>
@@ -229,7 +360,7 @@ namespace PrintLayoutAddin.UI
                 RowCount = 4,
             };
             root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 106));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 126));   // +20 for the field hint line
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 78));
@@ -247,30 +378,62 @@ namespace PrintLayoutAddin.UI
             {
                 Dock = DockStyle.Fill,
                 ColumnCount = 4,
-                RowCount = 3,
+                RowCount = 4,
             };
             panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 105));
             panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 0));
-            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 100));
             panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
             panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));
+            panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 20));
             panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
 
-            panel.Controls.Add(LabelFor("Sheet set name"), 0, 0);
+            var nameLabel = LabelFor("Sheet set name");
+            panel.Controls.Add(nameLabel, 0, 0);
             _nameBox = new TextBox { Dock = DockStyle.Fill };
+            _nameBox.TextChanged += (s, e) =>
+            {
+                MarkDirty();
+                UpdateFieldHint();
+            };
             panel.Controls.Add(_nameBox, 1, 0);
             panel.SetColumnSpan(_nameBox, 2);
 
-            panel.Controls.Add(LabelFor("DST file"), 0, 1);
+            var pathLabel = LabelFor("DST file");
+            panel.Controls.Add(pathLabel, 0, 1);
             _pathBox = new TextBox
             {
                 Dock = DockStyle.Fill,
                 ReadOnly = true,
                 BackColor = SystemColors.Control,
             };
+            _pathBox.TextChanged += (s, e) => UpdateFieldHint();
             panel.Controls.Add(_pathBox, 1, 1);
-            panel.SetColumnSpan(_pathBox, 3);
+            panel.SetColumnSpan(_pathBox, 2);
+
+            var browseBtn = HeaderButton("Browse…", Color.FromArgb(71, 85, 105));
+            browseBtn.Click += (s, e) => BrowseDstFile();
+            panel.Controls.Add(browseBtn, 3, 1);
+
+            // The two fields above are independent, and they usually start out identical —
+            // which is exactly why users read them as one thing. This line moves as they type,
+            // so the split is visible instead of explained.
+            _fieldHint = new Label
+            {
+                Dock = DockStyle.Fill,
+                ForeColor = Color.DimGray,
+                TextAlign = ContentAlignment.MiddleLeft,
+                AutoEllipsis = true,
+                Margin = new Padding(3, 0, 3, 0),
+            };
+            panel.Controls.Add(_fieldHint, 0, 2);
+            panel.SetColumnSpan(_fieldHint, 4);
+
+            _tips.SetToolTip(nameLabel, SheetSetNameTip);
+            _tips.SetToolTip(_nameBox, SheetSetNameTip);
+            _tips.SetToolTip(pathLabel, DstFileTip);
+            _tips.SetToolTip(_pathBox, DstFileTip);
 
             var importBtn = new Button
             {
@@ -288,9 +451,42 @@ namespace PrintLayoutAddin.UI
             panel.Controls.Add(importBtn, 3, 0);
 
             var legend = BuildSubsetLevelLegend();
-            panel.Controls.Add(legend, 0, 2);
+            panel.Controls.Add(legend, 0, 3);
             panel.SetColumnSpan(legend, 4);
+
+            UpdateFieldHint();
             return panel;
+        }
+
+        private const string SheetSetNameTip =
+            "Name shown at the root of the tree in Sheet Set Manager.\n"
+            + "Stored inside the .dst — changing it does NOT rename the file.";
+
+        private const string DstFileTip =
+            "The .dst file on disk. Change it with Browse…\n"
+            + "Renaming the sheet set above does not move or rename this file.";
+
+        /// <summary>Keeps the grey line under the two fields in sync with what they hold.</summary>
+        private void UpdateFieldHint()
+        {
+            if (_fieldHint == null) return;
+
+            var name = (_nameBox?.Text ?? "").Trim();
+            var path = CurrentDstPath();
+
+            string fileName;
+            try
+            {
+                fileName = string.IsNullOrWhiteSpace(path)
+                    ? "(not chosen yet)"
+                    : Path.GetFileName(path);
+            }
+            catch { fileName = "(not chosen yet)"; }
+
+            _fieldHint.Text =
+                "Sheet Set Manager shows: "
+                + (string.IsNullOrWhiteSpace(name) ? "(no name)" : "\"" + name + "\"")
+                + "     ·     Saved file: " + fileName;
         }
 
         private static Control BuildSubsetLevelLegend()
@@ -356,13 +552,10 @@ namespace PrintLayoutAddin.UI
                 Color.FromArgb(255, 51, 51), Color.White);
             deleteSel.Width = 150;
             // Teal — sync from DST
-            var refresh = StyleButton(ToolbarButton("Refresh from DST", () =>
-            {
-                var name = ReloadFromDstOrModel();
-                if (!string.IsNullOrWhiteSpace(name)) _nameBox.Text = name;
-                ValidateUi();
-            }), Color.FromArgb(13, 148, 136), Color.White);
+            var refresh = StyleButton(ToolbarButton("Refresh from DST", RefreshFromDst),
+                Color.FromArgb(13, 148, 136), Color.White);
             refresh.Width = 130;
+            _refreshBtn = refresh;
             // Green — export table
             var exportExcel = StyleButton(ToolbarButton("Export Excel…", ExportExcel),
                 Color.FromArgb(22, 163, 74), Color.White);
@@ -379,6 +572,20 @@ namespace PrintLayoutAddin.UI
             bar.Controls.Add(importExcel);
             bar.Controls.Add(deleteSel);
             return bar;
+        }
+
+        /// <summary>
+        /// Replaces the table with the DST content — so unsaved edits have to be confirmed away
+        /// first, otherwise they vanish without a word.
+        /// </summary>
+        private void RefreshFromDst()
+        {
+            if (!ConfirmDiscardTableEdits("Refresh from DST")) return;
+
+            var name = ReloadFromDstOrModel();
+            if (!string.IsNullOrWhiteSpace(name)) _nameBox.Text = name;
+            ClearDirty();
+            ValidateUi();
         }
 
         private Control BuildGrid()
@@ -461,7 +668,14 @@ namespace PrintLayoutAddin.UI
 
             _source.DataSource = _entries;
             _grid.DataSource = _source;
-            _grid.CellValueChanged += (s, e) => ValidateUi();
+            _grid.CellValueChanged += (s, e) =>
+            {
+                // SelectCol only picks rows for Delete — it is not written to the DST.
+                if (e.ColumnIndex >= 0
+                    && _grid.Columns[e.ColumnIndex].Name != "SelectCol")
+                    MarkDirty();
+                ValidateUi();
+            };
             _grid.CellBeginEdit += (s, e) =>
             {
                 if (e.RowIndex < 0 || e.RowIndex >= _entries.Count) return;
@@ -643,10 +857,7 @@ namespace PrintLayoutAddin.UI
                 initialDir = Path.GetDirectoryName(_pathBox.Text);
                 if (string.IsNullOrWhiteSpace(initialDir) || !Directory.Exists(initialDir))
                 {
-                    var publish = PublishPaths.GetFolder(_dwgPath, create: false);
-                    initialDir = Directory.Exists(publish)
-                        ? publish
-                        : Path.GetDirectoryName(_dwgPath);
+                    initialDir = Path.GetDirectoryName(_dwgPath);
                 }
             }
             catch { }
@@ -717,10 +928,7 @@ namespace PrintLayoutAddin.UI
                 initialDir = Path.GetDirectoryName(_pathBox.Text);
                 if (string.IsNullOrWhiteSpace(initialDir) || !Directory.Exists(initialDir))
                 {
-                    var publish = PublishPaths.GetFolder(_dwgPath, create: false);
-                    initialDir = Directory.Exists(publish)
-                        ? publish
-                        : Path.GetDirectoryName(_dwgPath);
+                    initialDir = Path.GetDirectoryName(_dwgPath);
                 }
             }
             catch { }
@@ -760,6 +968,7 @@ namespace PrintLayoutAddin.UI
 
                     _source.ResetBindings(false);
                     ApplyRowStyles();
+                    MarkDirty();
                     ValidateUi();
                     SetStatus(apply.Summary + "  " + ofd.FileName, false);
 
@@ -850,6 +1059,7 @@ namespace PrintLayoutAddin.UI
             RefreshOrders();
             _source.ResetBindings(false);
             ApplyRowStyles();
+            MarkDirty();
             ValidateUi();
             SetStatus(
                 $"Removed {removeSheets} sheet(s) and {removeSubsets} subset(s) from the table. "
@@ -909,6 +1119,7 @@ namespace PrintLayoutAddin.UI
             _grid.ClearSelection();
             _grid.Rows[newIndex].Selected = true;
             _grid.CurrentCell = _grid.Rows[newIndex].Cells[0];
+            MarkDirty();
             SetStatus("Sheet moved. Click Create / Update DST to write order/subsets to the DST.", false);
         }
 
@@ -1062,14 +1273,19 @@ namespace PrintLayoutAddin.UI
                 $"{scan.Message}\n\n"
                 + $"Parent: {(string.IsNullOrEmpty(parentPath) ? "(Sheet Set root)" : parentPath)}\n"
                 + $"Will create/merge ~{subsets} subset(s), {drawings} drawing(s), {layouts} sheet(s).\n\n"
-                + "Matching sheets (same DWG path + layout name) will be replaced.\nContinue?",
+                + "Matching sheets (same DWG path + layout name) will be replaced in the table.\n"
+                + "The DST file is written only when you click Create / Update DST.\nContinue?",
                 "Import folder",
                 MessageBoxButtons.YesNo,
                 MessageBoxIcon.Question);
             if (confirm != DialogResult.Yes) return;
 
-            FinishImportWrite(dst => SheetSetService.ImportFolderTree(
-                dst, _nameBox.Text, parentPath, scan.Root));
+            CommitGrid();
+            _entries.RaiseListChangedEvents = false;
+            var imported = SheetSetFolderImport.MergeIntoEntries(
+                _entries, parentPath, scan.Root, folderBecomesSubset: true);
+            _entries.RaiseListChangedEvents = true;
+            FinishImportGrid(imported);
         }
 
         private void ImportDrawingFiles()
@@ -1124,38 +1340,23 @@ namespace PrintLayoutAddin.UI
                 $"{scan.Message}\n\n"
                 + $"Parent: {(string.IsNullOrEmpty(parentPath) ? "(Sheet Set root)" : parentPath)}\n"
                 + "Selected files become sheets directly (no subset per file).\n\n"
-                + "Matching sheets (same DWG path + layout name) will be replaced.\nContinue?",
+                + "Matching sheets (same DWG path + layout name) will be replaced in the table.\n"
+                + "The DST file is written only when you click Create / Update DST.\nContinue?",
                 "Import drawings",
                 MessageBoxButtons.YesNo,
                 MessageBoxIcon.Question);
             if (confirm != DialogResult.Yes) return;
 
-            FinishImportWrite(dst => SheetSetService.ImportDrawingFiles(
-                dst, _nameBox.Text, parentPath, scan.Root.Drawings));
+            CommitGrid();
+            _entries.RaiseListChangedEvents = false;
+            var imported = SheetSetFolderImport.MergeIntoEntries(
+                _entries, parentPath, scan.Root, folderBecomesSubset: false);
+            _entries.RaiseListChangedEvents = true;
+            FinishImportGrid(imported);
         }
 
-        private void FinishImportWrite(Func<string, SheetSetService.FolderImportWriteResult> writeAction)
+        private void FinishImportGrid(SheetSetFolderImport.GridImportResult write)
         {
-            var dstPath = NormalizeDstPath(_pathBox.Text);
-            if (string.IsNullOrWhiteSpace(dstPath))
-            {
-                SetStatus("DST path is missing.", true);
-                return;
-            }
-
-            SheetSetService.FolderImportWriteResult write;
-            UseWaitCursor = true;
-            try
-            {
-                SetStatus("Writing Sheet Set…", false);
-                System.Windows.Forms.Application.DoEvents();
-                write = writeAction(dstPath);
-            }
-            finally
-            {
-                UseWaitCursor = false;
-            }
-
             if (write == null || !write.Ok)
             {
                 var err = write?.Message ?? "Import failed.";
@@ -1164,12 +1365,15 @@ namespace PrintLayoutAddin.UI
                 return;
             }
 
-            _pathBox.Text = dstPath;
-            SaveDefaults();
-            var name = ReloadFromDstOrModel();
-            if (!string.IsNullOrWhiteSpace(name)) _nameBox.Text = name;
+            ReassignSubsetMembership();
+            RefreshOrders();
+            _source.ResetBindings(false);
             ApplyRowStyles();
-            SetStatus(write.Message, false);
+            ApplyRevisionSummaries();
+            SeedRevisionFromHistoryIfEmpty();
+            MarkDirty();
+            ValidateUi();
+            SetStatus(write.Message.Replace("\n", " "), false);
             MessageBox.Show(this, write.Message, "Import", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
 
@@ -1258,7 +1462,8 @@ namespace PrintLayoutAddin.UI
             return paths;
         }
 
-        private void CreateDst()
+        /// <summary>Writes the table to the DST. Returns true only when the file was written.</summary>
+        private bool CreateDst()
         {
             CommitGrid();
             ReassignSubsetMembership();
@@ -1267,8 +1472,18 @@ namespace PrintLayoutAddin.UI
             var path = NormalizeDstPath(_pathBox.Text);
             if (string.IsNullOrWhiteSpace(path))
             {
-                SetStatus("DST path is missing.", true);
-                return;
+                MessageBox.Show(this,
+                    "No DST path selected.\n\nClick Browse… to choose an existing .dst or a new file name.",
+                    "Create / Update DST",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+                SetStatus("DST path is missing. Click Browse… to choose where to save.", true);
+                return false;
+            }
+            if (!HasDstExtension(path))
+            {
+                SetStatus("DST path must be a .dst file.", true);
+                return false;
             }
 
             if (sheetCount == 0)
@@ -1282,7 +1497,7 @@ namespace PrintLayoutAddin.UI
                     "Create / Update Sheet Set",
                     MessageBoxButtons.YesNo,
                     MessageBoxIcon.Warning);
-                if (clear != DialogResult.Yes) return;
+                if (clear != DialogResult.Yes) return false;
             }
             else if (File.Exists(path))
             {
@@ -1296,7 +1511,7 @@ namespace PrintLayoutAddin.UI
                     "Create / Update Sheet Set",
                     MessageBoxButtons.YesNo,
                     MessageBoxIcon.Question);
-                if (answer != DialogResult.Yes) return;
+                if (answer != DialogResult.Yes) return false;
             }
 
             try
@@ -1314,7 +1529,7 @@ namespace PrintLayoutAddin.UI
                     SetStatus(
                         "Could not save the drawing. Save it manually (Ctrl+S), then Create / Update again.",
                         true);
-                    return;
+                    return false;
                 }
 
                 SheetSetService.CreateOrReplace(path, _nameBox.Text, writeList);
@@ -1329,6 +1544,7 @@ namespace PrintLayoutAddin.UI
                 SaveDefaults();
                 var name = ReloadFromDstOrModel();
                 if (!string.IsNullOrWhiteSpace(name)) _nameBox.Text = name;
+                ClearDirty();
                 SetStatus($"Wrote {sheetCount} sheet(s) to DST: {path}", false);
 
                 string openNote = "";
@@ -1354,13 +1570,14 @@ namespace PrintLayoutAddin.UI
                     "Create Sheet Set",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Information);
+                return true;
             }
             catch (Exception ex)
             {
                 SheetSetAutoLog.WriteException(
-                    null, _dwgPath, "PLSHEETSET", "Create/Update DST failed", ex, _fixedDstPath);
+                    null, _dwgPath, "PLSHEETSET", "Create/Update DST failed", ex, CurrentDstPath());
                 SetStatus(ex.Message, true);
-                string logPath = SheetSetAutoLog.GetLogFilePath(_dwgPath, _fixedDstPath);
+                string logPath = SheetSetAutoLog.GetLogFilePath(_dwgPath, CurrentDstPath());
                 MessageBox.Show(
                     this,
                     ex.Message
@@ -1369,11 +1586,12 @@ namespace PrintLayoutAddin.UI
                     "Create Sheet Set",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Error);
+                return false;
             }
             finally
             {
                 UseWaitCursor = false;
-                ValidateUi();
+                ValidateUi();   // re-enables _createBtn
             }
         }
 
@@ -1393,14 +1611,165 @@ namespace PrintLayoutAddin.UI
             CommitGrid();
             var selected = GetSelectedEntries();
             if (selected.Count == 0) return;
-            ExportLayouts = selected
+            var layouts = selected
                 .Where(x => !x.IsSubset && x.Layout != null)
                 .Select(x => x.Layout)
                 .ToList();
-            if (ExportLayouts.Count == 0) return;
+            if (layouts.Count == 0) return;
+
+            if (!ConfirmSheetSetFieldsBeforeExport(layouts)) return;
+
+            ExportLayouts = layouts;
             SaveDefaults();
             DialogResult = DialogResult.OK;
             Close();
+        }
+
+        /// <summary>
+        /// Title-block Sheet Set fields print as #### unless the layout is a sheet in the DST on
+        /// disk. Two things break that: table edits never written, and layouts that were never
+        /// imported (typical right after Build Layouts). Warn on either, in one dialog.
+        /// Returns false to stay in the Sheet Set dialog.
+        /// </summary>
+        private bool ConfirmSheetSetFieldsBeforeExport(List<PrintableLayout> layouts)
+        {
+            var reasons = new List<string>();
+            if (_dirty)
+                reasons.Add("• Table edits have not been written to the DST.");
+
+            var missing = LayoutsMissingFromDst(layouts);
+            if (missing.Count > 0)
+            {
+                string names = missing.Count <= 6
+                    ? string.Join(", ", missing)
+                    : string.Join(", ", missing.Take(6)) + ", …";
+                reasons.Add($"• {missing.Count} layout(s) are not sheets in the DST yet: {names}");
+            }
+
+            if (reasons.Count == 0) return true;
+
+            string message =
+                "Before exporting to PDF:\n\n"
+                + string.Join("\n", reasons)
+                + "\n\nTitle-block Sheet Set fields on the PDF may still show ####.";
+
+            switch (AskExportChoice(message))
+            {
+                case ExportChoice.UpdateThenExport:
+                    // CreateDst queues its own REGEN, and PLPRINT is queued after this dialog
+                    // closes — so the fields are resolved by the time the PDF is plotted.
+                    return CreateDst();
+
+                case ExportChoice.ExportAnyway:
+                    return true;
+
+                default:
+                    return false;
+            }
+        }
+
+        /// <summary>Names of <paramref name="layouts"/> with no matching sheet in the DST on disk.</summary>
+        private List<string> LayoutsMissingFromDst(List<PrintableLayout> layouts)
+        {
+            var all = layouts
+                .Where(l => l != null && !string.IsNullOrWhiteSpace(l.Name))
+                .Select(l => l.Name)
+                .ToList();
+
+            var path = CurrentDstPath();
+            bool exists;
+            try { exists = !string.IsNullOrWhiteSpace(path) && File.Exists(path); }
+            catch { exists = false; }
+            if (!exists) return all;   // no DST at all — every field will be ####
+
+            var dst = SheetSetService.TryRead(path);
+            if (dst?.Nodes == null) return all;
+
+            var inDst = new HashSet<string>(
+                dst.Nodes
+                    .Where(n => n != null
+                                && n.Kind != SheetSetRowKind.Subset
+                                && !string.IsNullOrWhiteSpace(n.LayoutName))
+                    .Select(n => n.LayoutName.Trim()),
+                StringComparer.OrdinalIgnoreCase);
+
+            return all.Where(n => !inDst.Contains(n.Trim())).ToList();
+        }
+
+        private enum ExportChoice { Cancel, UpdateThenExport, ExportAnyway }
+
+        /// <summary>
+        /// Three-way question. A pair of sequential Yes/No boxes would ask twice for one decision,
+        /// and MessageBox cannot relabel its buttons.
+        /// </summary>
+        private ExportChoice AskExportChoice(string message)
+        {
+            using (var dlg = new Form
+            {
+                Text = "Export PDF",
+                Width = 520,
+                Height = 240,
+                StartPosition = FormStartPosition.CenterParent,
+                FormBorderStyle = FormBorderStyle.FixedDialog,
+                MaximizeBox = false,
+                MinimizeBox = false,
+                ShowInTaskbar = false,
+            })
+            {
+                var label = new Label
+                {
+                    Text = message,
+                    Left = 14,
+                    Top = 14,
+                    Width = 480,
+                    Height = 120,
+                };
+
+                var update = new Button
+                {
+                    Text = "Update DST && Export",
+                    Left = 14,
+                    Top = 150,
+                    Width = 170,
+                    Height = 32,
+                    DialogResult = DialogResult.Yes,
+                };
+                var anyway = new Button
+                {
+                    Text = "Export anyway",
+                    Left = 194,
+                    Top = 150,
+                    Width = 140,
+                    Height = 32,
+                    DialogResult = DialogResult.No,
+                };
+                var cancel = new Button
+                {
+                    Text = "Cancel",
+                    Left = 404,
+                    Top = 150,
+                    Width = 90,
+                    Height = 32,
+                    DialogResult = DialogResult.Cancel,
+                };
+                StyleButton(update, Color.FromArgb(180, 83, 9), Color.White);
+                StyleButton(anyway, Color.FromArgb(37, 99, 235), Color.White);
+                StyleButton(cancel, Color.FromArgb(226, 232, 240), Color.FromArgb(51, 65, 85));
+
+                dlg.Controls.Add(label);
+                dlg.Controls.Add(update);
+                dlg.Controls.Add(anyway);
+                dlg.Controls.Add(cancel);
+                dlg.AcceptButton = update;
+                dlg.CancelButton = cancel;
+
+                switch (dlg.ShowDialog(this))
+                {
+                    case DialogResult.Yes: return ExportChoice.UpdateThenExport;
+                    case DialogResult.No: return ExportChoice.ExportAnyway;
+                    default: return ExportChoice.Cancel;
+                }
+            }
         }
 
         private List<SheetSetEntry> GetSelectedEntries()
@@ -1433,9 +1802,24 @@ namespace PrintLayoutAddin.UI
             if (_createBtn == null || _exportBtn == null) return;
             int count = _entries.Count(x => !x.IsSubset && x.Layout != null);
             bool hasPath = !string.IsNullOrWhiteSpace(_pathBox.Text);
-            // Allow Create/Update with 0 sheets to clear the DST; Export PDF still needs sheets.
-            _createBtn.Enabled = hasPath;
+            // Keep Create clickable with no path so the user gets a Browse reminder
+            // (flat orange-on-disabled looks the same as enabled).
+            _createBtn.Enabled = true;
+            ApplyActionLook(_createBtn, hasPath,
+                Color.FromArgb(180, 83, 9), Color.White,
+                Color.FromArgb(203, 213, 225), Color.FromArgb(100, 116, 139));
             _exportBtn.Enabled = count > 0;
+            ApplyActionLook(_exportBtn, count > 0,
+                Color.FromArgb(37, 99, 235), Color.White,
+                Color.FromArgb(203, 213, 225), Color.FromArgb(100, 116, 139));
+            if (_refreshBtn != null)
+            {
+                bool canRefresh = DstFileExists();
+                _refreshBtn.Enabled = canRefresh;
+                ApplyActionLook(_refreshBtn, canRefresh,
+                    Color.FromArgb(13, 148, 136), Color.White,
+                    Color.FromArgb(203, 213, 225), Color.FromArgb(100, 116, 139));
+            }
             if (_status != null && (_status.Text.StartsWith("Loaded") || _status.Text.StartsWith("No DST")
                 || _status.Text.StartsWith("DST has") || string.IsNullOrWhiteSpace(_status.Text)
                 || _status.Text.Contains("sheet(s)")))
@@ -1446,11 +1830,118 @@ namespace PrintLayoutAddin.UI
             }
         }
 
-        private void ApplyFixedPath(string dstPath, string sheetSetName)
+        private void ApplySuggestedPath(string dstPath, string sheetSetName)
         {
             _pathBox.Text = dstPath ?? "";
             _nameBox.Text = sheetSetName ?? "";
             LoadOpenSsmPref();
+        }
+
+        private string CurrentDstPath() => NormalizeDstPath(_pathBox?.Text);
+
+        private bool DstFileExists()
+        {
+            var path = CurrentDstPath();
+            try { return !string.IsNullOrWhiteSpace(path) && File.Exists(path); }
+            catch { return false; }
+        }
+
+        private void BrowseDstFile()
+        {
+            string initialDir = null;
+            string fileName = (Path.GetFileNameWithoutExtension(_dwgPath) ?? "SheetSet") + ".dst";
+            try
+            {
+                var current = CurrentDstPath();
+                if (!string.IsNullOrWhiteSpace(current))
+                {
+                    initialDir = Path.GetDirectoryName(current);
+                    fileName = Path.GetFileName(current);
+                }
+                if (string.IsNullOrWhiteSpace(initialDir) || !Directory.Exists(initialDir))
+                    initialDir = Path.GetDirectoryName(_dwgPath);
+            }
+            catch { }
+
+            using (var sfd = new System.Windows.Forms.SaveFileDialog
+            {
+                Title = "Sheet Set (.dst) — pick an existing file to load, or a new name to save later",
+                Filter = "Sheet Set (*.dst)|*.dst",
+                DefaultExt = "dst",
+                AddExtension = true,
+                OverwritePrompt = false,
+                CheckFileExists = false,
+                FileName = fileName,
+                InitialDirectory = initialDir,
+            })
+            {
+                if (sfd.ShowDialog(this) != DialogResult.OK) return;
+                var path = NormalizeDstPath(sfd.FileName);
+                if (!HasDstExtension(path))
+                {
+                    MessageBox.Show(this,
+                        "Choose a .dst file.\n\n" + path,
+                        "DST file", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                bool exists;
+                try { exists = File.Exists(path); }
+                catch { exists = false; }
+
+                if (exists)
+                {
+                    var read = SheetSetService.TryRead(path);
+                    if (read == null)
+                    {
+                        MessageBox.Show(this,
+                            "That file is not a readable Sheet Set (.dst).\n\n" + path,
+                            "DST file", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        return;
+                    }
+
+                    // Loading an existing file overwrites the table, same as Refresh.
+                    if (!ConfirmDiscardTableEdits("Load Sheet Set")) return;
+
+                    var previous = CurrentDstPath();
+                    if (!string.Equals(previous, path, StringComparison.OrdinalIgnoreCase)
+                        && !string.IsNullOrWhiteSpace(previous))
+                    {
+                        try { SheetSetLauncher.SoftCloseOpenDatabase(previous); }
+                        catch { }
+                    }
+                    _pathBox.Text = path;
+                    var name = LoadFromDstFile(path);
+                    if (!string.IsNullOrWhiteSpace(name)) _nameBox.Text = name;
+                    ClearDirty();
+                }
+                else
+                {
+                    // Only a path was chosen; the table is still unwritten, so dirty stays as it is.
+                    _pathBox.Text = path;
+                    if (string.IsNullOrWhiteSpace(_nameBox.Text))
+                        _nameBox.Text = Path.GetFileNameWithoutExtension(path) ?? "";
+                    SetStatus("DST path set. Click Create / Update DST to write the file.", false);
+                }
+                ValidateUi();
+            }
+        }
+
+        private static Button HeaderButton(string text, Color back)
+        {
+            var button = new Button
+            {
+                Text = text,
+                Dock = DockStyle.Fill,
+                Margin = new Padding(6, 2, 0, 2),
+                FlatStyle = FlatStyle.Flat,
+                BackColor = back,
+                ForeColor = Color.White,
+                UseVisualStyleBackColor = false,
+                Cursor = Cursors.Hand,
+            };
+            button.FlatAppearance.BorderSize = 0;
+            return button;
         }
 
         private void LoadOpenSsmPref()
@@ -1488,6 +1979,7 @@ namespace PrintLayoutAddin.UI
 
         private void SetStatus(string text, bool isError)
         {
+            if (_status == null) return;
             _status.Text = text ?? "";
             _status.ForeColor = isError ? Color.DarkRed : Color.DarkGreen;
         }
@@ -1518,6 +2010,18 @@ namespace PrintLayoutAddin.UI
             return button;
         }
 
+        private static void ApplyActionLook(
+            Button button, bool ready, Color readyBack, Color readyFore, Color waitBack, Color waitFore)
+        {
+            if (button == null) return;
+            var back = ready ? readyBack : waitBack;
+            var fore = ready ? readyFore : waitFore;
+            button.BackColor = back;
+            button.ForeColor = fore;
+            button.FlatAppearance.MouseOverBackColor = ControlPaint.Dark(back, 0.08f);
+            button.FlatAppearance.MouseDownBackColor = ControlPaint.Dark(back, 0.15f);
+        }
+
         private static Button StyleButton(Button button, Color back, Color fore)
         {
             if (button == null) return null;
@@ -1527,17 +2031,27 @@ namespace PrintLayoutAddin.UI
             button.ForeColor = fore;
             button.UseVisualStyleBackColor = false;
             button.Cursor = Cursors.Hand;
-            // Slightly darker hover via FlatAppearance
             button.FlatAppearance.MouseOverBackColor = ControlPaint.Dark(back, 0.08f);
             button.FlatAppearance.MouseDownBackColor = ControlPaint.Dark(back, 0.15f);
             return button;
         }
 
+        private static bool HasDstExtension(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path)) return false;
+            return path.Trim().EndsWith(".dst", StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// Keep .dst as-is. Do not append .dst onto .dwg / other files (that produced *.dwg.dst).
+        /// </summary>
         private static string NormalizeDstPath(string path)
         {
             if (string.IsNullOrWhiteSpace(path)) return "";
             var value = path.Trim();
-            return value.EndsWith(".dst", StringComparison.OrdinalIgnoreCase) ? value : value + ".dst";
+            if (HasDstExtension(value)) return value;
+            if (Path.HasExtension(value)) return value;
+            return value + ".dst";
         }
     }
 }

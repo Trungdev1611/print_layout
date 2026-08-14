@@ -201,7 +201,13 @@ namespace PrintLayoutAddin
                             return;
                         case DuplicateAction.Skip:
                             skipped++;
-                            if (lm.LayoutExists(name)) orderedNames.Add(name);
+                            if (lm.LayoutExists(name))
+                            {
+                                orderedNames.Add(name);
+                                // Kept as-is, but it is still one of ours — stamp it so a later
+                                // delete offers the DST cleanup (also backfills pre-2.0 drawings).
+                                PlayoutLayoutStamp.Stamp(db, lm.GetLayoutId(name));
+                            }
                             continue;
                         case DuplicateAction.Overwrite:
                             lm.DeleteLayout(name);
@@ -239,7 +245,9 @@ namespace PrintLayoutAddin
             {
                 try
                 {
-                    LayoutBuilder.PlaceLayoutsAfterTemplate(db, templateLayout, orderedNames);
+                    var tabs = LayoutBuilder.PlaceLayoutsAfterTemplate(db, templateLayout, orderedNames);
+                    if (!string.IsNullOrWhiteSpace(tabs))
+                        ed.WriteMessage("\nTab order: Model, " + tabs);
                 }
                 catch (System.Exception ex)
                 {
@@ -249,12 +257,13 @@ namespace PrintLayoutAddin
             }
 
             ed.WriteMessage($"\nDone. Created {created} layouts, skipped {skipped}, errors {errors}.");
+            ed.WriteMessage("\nTitle-block Sheet Set fields may show #### until you Create / Update a DST.");
+            try { LayoutDstSyncWatcher.RefreshSnapshot(); } catch { }
 
-            // Always report auto-DST status so we can see it in the command line / log file.
             if (!Config.Instance.AutoSheetSetAfterLayout)
             {
                 SheetSetAutoLog.Write(ed, doc?.Name,
-                    "skipped — config autoSheetSetAfterLayout=false");
+                    "skipped — no auto DST after PLAYOUT (open Create Sheet Set to write a .dst)");
             }
             else
             {
@@ -333,6 +342,11 @@ namespace PrintLayoutAddin
                     NotifyAutoSheetSetFailed(sync.Message);
                     return;
                 }
+
+                // Remember which DST these layouts belong to, so deleting a tab later can
+                // point the .dst picker straight at it.
+                try { PlayoutLayoutStamp.SetDstPathForStamped(doc.Database, sync.DstPath); } catch { }
+                try { LayoutDstSyncWatcher.RefreshSnapshot(); } catch { }
 
                 // Deliberately no ReloadForUser/SHEETSET here. Opening the DST in Sheet Set
                 // Manager on every PLAYOUT planted a second owner on the file, and the
@@ -853,7 +867,8 @@ namespace PrintLayoutAddin
                     doc.Name,
                     defaultDstPath))
                 {
-                    if (AcadApp.ShowModalDialog(dlg) != DialogResult.OK) return;
+                    var sheetResult = AcadApp.ShowModalDialog(dlg);
+                    if (sheetResult != DialogResult.OK) return;
                     if (dlg.ExportLayouts == null || dlg.ExportLayouts.Count == 0) return;
                     SavePrintLayoutSelection(dlg.ExportLayouts);
                 }

@@ -30,8 +30,9 @@ namespace PrintLayoutAddin.Core
         /// <summary>
         /// After PLAYOUT, silently Create/Update the default DST so Sheet Set
         /// title-block fields resolve (no more ####) without opening PLSHEETSET.
+        /// Off by default: PLAYOUT only builds layouts; user creates DST in PLSHEETSET.
         /// </summary>
-        public bool AutoSheetSetAfterLayout { get; set; } = true;
+        public bool AutoSheetSetAfterLayout { get; set; } = false;
 
         /// <summary>
         /// Width (paper units) of the title-strip scan box to the right of the viewport

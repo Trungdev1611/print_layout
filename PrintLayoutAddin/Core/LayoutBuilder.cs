@@ -43,38 +43,47 @@ namespace PrintLayoutAddin.Core
                 tr.Commit();
             }
 
+            // Mark it as ours so deleting the tab later can offer to drop the matching DST sheet.
+            PlayoutLayoutStamp.Stamp(db, layoutId);
+
             return layoutId;
         }
 
         /// <summary>
         /// CopyLayout inserts each clone immediately after the template, so creating
-        /// 01 then 02 yields tabs Layout1, 02, 01. Rebuild TabOrder:
-        /// Model, template, then <paramref name="afterTemplate"/> (numeric STT order),
-        /// then any other paper layouts in their previous relative order.
+        /// 01 then 02 yields tabs Layout1, 02, 01. Rebuild TabOrder to
+        /// template, then <paramref name="afterTemplate"/> in STT order, then any other
+        /// paper layouts in their previous relative order. Model is left alone.
+        /// Returns the resulting tab order for the command line.
         /// </summary>
-        public static void PlaceLayoutsAfterTemplate(
+        public static string PlaceLayoutsAfterTemplate(
             Database db, string templateLayoutName, IList<string> afterTemplate)
         {
-            if (afterTemplate == null || afterTemplate.Count == 0) return;
+            if (afterTemplate == null || afterTemplate.Count == 0) return "";
 
             var wanted = afterTemplate
                 .Where(n => !string.IsNullOrWhiteSpace(n))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
-            if (wanted.Count == 0) return;
+            if (wanted.Count == 0) return "";
+
+            var names = new List<string>();
+            string firstTab = null;
 
             using (var tr = db.TransactionManager.StartTransaction())
             {
                 var dict = (DBDictionary)tr.GetObject(db.LayoutDictionaryId, OpenMode.ForRead);
-                var all = new List<Layout>();
+                var paper = new List<Layout>();
                 foreach (DBDictionaryEntry e in dict)
                 {
                     var layout = (Layout)tr.GetObject(e.Value, OpenMode.ForRead);
-                    all.Add(layout);
+                    // Model owns TabOrder 0. Renumbering it from the same sequence as the
+                    // paper tabs puts two layouts on 0 and AutoCAD then falls back to
+                    // dictionary order, which is the CopyLayout order we are trying to undo.
+                    if (layout.ModelType) continue;
+                    paper.Add(layout);
                 }
-
-                var model = all.FirstOrDefault(l => l.ModelType);
-                var paper = all.Where(l => !l.ModelType).OrderBy(l => l.TabOrder).ToList();
+                paper = paper.OrderBy(l => l.TabOrder).ToList();
 
                 Layout Find(string name) =>
                     paper.FirstOrDefault(l =>
@@ -82,35 +91,52 @@ namespace PrintLayoutAddin.Core
 
                 var template = Find(templateLayoutName);
                 var batch = new List<Layout>();
-                foreach (var name in wanted)
+                var seen = new HashSet<ObjectId>();
+                foreach (var name in wanted)   // caller hands these over already in STT order
                 {
                     var layout = Find(name);
                     if (layout == null) continue;
                     if (template != null && layout.ObjectId == template.ObjectId) continue;
+                    if (!seen.Add(layout.ObjectId)) continue;
                     batch.Add(layout);
                 }
 
-                var batchIds = new HashSet<ObjectId>(batch.Select(l => l.ObjectId));
-                var rest = paper.Where(l =>
-                    (template == null || l.ObjectId != template.ObjectId)
-                    && !batchIds.Contains(l.ObjectId)).ToList();
+                var placed = new HashSet<ObjectId>(batch.Select(l => l.ObjectId));
+                if (template != null) placed.Add(template.ObjectId);
+                var rest = paper.Where(l => !placed.Contains(l.ObjectId)).ToList();
 
                 var ordered = new List<Layout>();
-                if (model != null) ordered.Add(model);
                 if (template != null) ordered.Add(template);
                 ordered.AddRange(batch);
                 ordered.AddRange(rest);
 
+                // Paper tabs are 1-based — 0 is Model's.
                 for (int i = 0; i < ordered.Count; i++)
                 {
-                    var layout = ordered[i];
-                    if (!layout.IsWriteEnabled)
-                        layout = (Layout)tr.GetObject(layout.ObjectId, OpenMode.ForWrite);
-                    layout.TabOrder = i;
+                    var layout = (Layout)tr.GetObject(ordered[i].ObjectId, OpenMode.ForWrite);
+                    layout.TabOrder = i + 1;
+                    names.Add(layout.LayoutName);
                 }
 
+                firstTab = batch.Count > 0 ? batch[0].LayoutName : null;
                 tr.Commit();
             }
+
+            // The tab strip is built once and does not watch TabOrder, so a correct database
+            // can still show the old order. Switching layouts forces it to rebuild — and
+            // landing on the first sheet is where the user wants to be anyway.
+            if (!string.IsNullOrWhiteSpace(firstTab))
+            {
+                try
+                {
+                    var lm = Autodesk.AutoCAD.DatabaseServices.LayoutManager.Current;
+                    if (lm != null && lm.LayoutExists(firstTab))
+                        lm.CurrentLayout = firstTab;
+                }
+                catch { }
+            }
+
+            return string.Join(", ", names);
         }
 
         private static void TemporarilyUnlockLayer(ObjectId layerId, Transaction tr)

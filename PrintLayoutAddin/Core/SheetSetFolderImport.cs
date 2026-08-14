@@ -452,5 +452,211 @@ namespace PrintLayoutAddin.Core
 
             return node.HasContent ? node : null;
         }
+
+        public class GridImportResult
+        {
+            public bool Ok { get; set; }
+            public string Message { get; set; }
+            public int SubsetsCreated { get; set; }
+            public int SheetsAdded { get; set; }
+            public int SheetsReplaced { get; set; }
+        }
+
+        /// <summary>
+        /// Merge a scanned tree into the dialog table only. Does not create or write a .dst.
+        /// Matching sheets (same DWG + layout) are removed then re-added under the parent.
+        /// </summary>
+        public static GridImportResult MergeIntoEntries(
+            IList<SheetSetEntry> entries,
+            string parentSubsetPath,
+            ImportFolderNode root,
+            bool folderBecomesSubset)
+        {
+            var result = new GridImportResult();
+            if (entries == null)
+            {
+                result.Message = "No table to import into.";
+                return result;
+            }
+            if (root == null || !root.HasContent)
+            {
+                result.Message = "Nothing to import.";
+                return result;
+            }
+
+            var keys = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var pair in root.EnumerateLayouts())
+            {
+                if (pair.Layout == null || string.IsNullOrWhiteSpace(pair.Layout.LayoutName)) continue;
+                if (IsTemplateLayout(pair.Layout.LayoutName)) continue;
+                keys.Add(SheetKey(pair.DwgPath, pair.Layout.LayoutName));
+            }
+
+            for (int i = entries.Count - 1; i >= 0; i--)
+            {
+                var entry = entries[i];
+                if (entry == null || entry.IsSubset) continue;
+                string layoutName = entry.Layout?.Name ?? "";
+                if (string.IsNullOrWhiteSpace(layoutName)) continue;
+                if (!keys.Contains(SheetKey(entry.DwgPath, layoutName))) continue;
+                entries.RemoveAt(i);
+                result.SheetsReplaced++;
+            }
+
+            int parentIndex = -1;
+            int parentLevel = 0;
+            if (!string.IsNullOrWhiteSpace(parentSubsetPath))
+            {
+                parentIndex = FindSubsetIndexByPath(entries, parentSubsetPath);
+                if (parentIndex < 0)
+                {
+                    result.Message = "Could not resolve parent subset.";
+                    return result;
+                }
+                parentLevel = Math.Max(1, entries[parentIndex].SubsetLevel);
+            }
+
+            if (folderBecomesSubset)
+                MergeFolderNode(entries, parentIndex, parentLevel, root, result);
+            else
+                AppendDrawings(entries, parentIndex, parentLevel, root.Drawings, result);
+
+            result.Ok = true;
+            result.Message =
+                "Imported into the table (DST file not written yet).\n"
+                + $"Subsets added: {result.SubsetsCreated}, sheets added: {result.SheetsAdded}, "
+                + $"replaced: {result.SheetsReplaced}.\n\n"
+                + "Click Create / Update DST to write the file.";
+            return result;
+        }
+
+        private static int FindSubsetIndexByPath(IList<SheetSetEntry> entries, string parentSubsetPath)
+        {
+            var parts = parentSubsetPath
+                .Split(new[] { '/', '\\' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(p => p.Trim())
+                .Where(p => p.Length > 0)
+                .ToArray();
+            if (parts.Length == 0) return -1;
+
+            int parentIndex = -1;
+            int parentLevel = 0;
+            foreach (var part in parts)
+            {
+                int found = FindChildSubsetIndex(entries, parentIndex, parentLevel, part);
+                if (found < 0) return -1;
+                parentIndex = found;
+                parentLevel = Math.Max(1, entries[found].SubsetLevel);
+            }
+            return parentIndex;
+        }
+
+        private static int FindChildSubsetIndex(
+            IList<SheetSetEntry> entries, int parentIndex, int parentLevel, string name)
+        {
+            int childLevel = parentLevel <= 0 ? 1 : parentLevel + 1;
+            int start = parentIndex + 1;
+            int end = EndOfBlock(entries, parentIndex, parentLevel);
+            for (int i = start; i < end; i++)
+            {
+                var row = entries[i];
+                if (row == null || !row.IsSubset) continue;
+                if (Math.Max(1, row.SubsetLevel) != childLevel) continue;
+                var n = row.Title ?? row.SubsetName ?? "";
+                if (string.Equals(n, name, StringComparison.OrdinalIgnoreCase))
+                    return i;
+            }
+            return -1;
+        }
+
+        private static int EndOfBlock(IList<SheetSetEntry> entries, int subsetIndex, int subsetLevel)
+        {
+            if (subsetIndex < 0) return entries.Count;
+            int level = Math.Max(1, subsetLevel);
+            for (int i = subsetIndex + 1; i < entries.Count; i++)
+            {
+                var row = entries[i];
+                if (row != null && row.IsSubset && Math.Max(1, row.SubsetLevel) <= level)
+                    return i;
+            }
+            return entries.Count;
+        }
+
+        private static void MergeFolderNode(
+            IList<SheetSetEntry> entries,
+            int parentIndex,
+            int parentLevel,
+            ImportFolderNode node,
+            GridImportResult result)
+        {
+            if (node == null || !node.HasContent) return;
+            var name = string.IsNullOrWhiteSpace(node.Name) ? "Subset" : node.Name.Trim();
+            int subsetIndex = FindChildSubsetIndex(entries, parentIndex, parentLevel, name);
+            int subsetLevel = parentLevel <= 0 ? 1 : parentLevel + 1;
+            if (subsetIndex < 0)
+            {
+                int insertAt = EndOfBlock(entries, parentIndex, parentLevel);
+                entries.Insert(insertAt, new SheetSetEntry
+                {
+                    Kind = SheetSetRowKind.Subset,
+                    Include = false,
+                    SubsetName = name,
+                    SubsetLevel = subsetLevel,
+                    Title = name,
+                    SheetNumber = "",
+                });
+                result.SubsetsCreated++;
+                subsetIndex = insertAt;
+            }
+            else
+            {
+                subsetLevel = Math.Max(1, entries[subsetIndex].SubsetLevel);
+            }
+
+            AppendDrawings(entries, subsetIndex, subsetLevel, node.Drawings, result);
+            foreach (var child in node.Children)
+            {
+                if (child != null && child.HasContent)
+                    MergeFolderNode(entries, subsetIndex, subsetLevel, child, result);
+            }
+        }
+
+        private static void AppendDrawings(
+            IList<SheetSetEntry> entries,
+            int parentIndex,
+            int parentLevel,
+            IList<ImportDrawingFile> drawings,
+            GridImportResult result)
+        {
+            if (drawings == null) return;
+            int insertAt = EndOfBlock(entries, parentIndex, parentLevel);
+            foreach (var drawing in drawings)
+            {
+                if (drawing == null || string.IsNullOrWhiteSpace(drawing.DwgPath)) continue;
+                foreach (var layout in drawing.Layouts ?? Enumerable.Empty<ImportLayoutSheet>())
+                {
+                    if (layout == null || string.IsNullOrWhiteSpace(layout.LayoutName)) continue;
+                    if (IsTemplateLayout(layout.LayoutName)) continue;
+                    if (string.IsNullOrWhiteSpace(layout.DrawingName)) continue;
+
+                    entries.Insert(insertAt, new SheetSetEntry
+                    {
+                        Kind = SheetSetRowKind.Sheet,
+                        Include = true,
+                        SubsetName = parentIndex >= 0
+                            ? (entries[parentIndex].Title ?? entries[parentIndex].SubsetName)
+                            : null,
+                        SubsetLevel = parentLevel,
+                        SheetNumber = layout.LayoutName,
+                        Title = ResolveSheetTitle(layout.LayoutName, layout.DrawingName, drawing.DwgPath),
+                        Revision = "",
+                        DwgPath = drawing.DwgPath,
+                        Layout = new PrintableLayout { Name = layout.LayoutName },
+                    });
+                    insertAt++;
+                    result.SheetsAdded++;
+                }
+            }
+        }
     }
 }

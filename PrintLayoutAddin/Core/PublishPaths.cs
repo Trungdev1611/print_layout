@@ -4,10 +4,7 @@ using System.IO;
 namespace PrintLayoutAddin.Core
 {
     /// <summary>
-    /// Shared default locations for Sheet Set (.dst) and PDF export.
-    /// Both land in <c>{dwgDir}/sheetset_manager/</c> (name configurable).
-    /// Path helpers do <b>not</b> create the folder — callers that write a file
-    /// must call <see cref="EnsureFolder"/> (or create the parent of the file path).
+    /// Default PDF path is next to the DWG. Callers that write must create parent folders.
     /// </summary>
     public static class PublishPaths
     {
@@ -53,12 +50,20 @@ namespace PrintLayoutAddin.Core
 
         public static string DefaultPdfPath(string dwgPath)
         {
-            return Path.Combine(GetFolder(dwgPath, create: false), BaseName(dwgPath) + "_layout.pdf");
+            string dir = null;
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(dwgPath))
+                    dir = Path.GetDirectoryName(dwgPath);
+            }
+            catch { }
+            if (string.IsNullOrWhiteSpace(dir) || !Directory.Exists(dir))
+                dir = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+            return Path.Combine(dir, BaseName(dwgPath) + "_layout.pdf");
         }
 
         /// <summary>
-        /// Keep a remembered path only when it still targets this drawing's
-        /// sheetset_manager folder; otherwise fall back to the fresh default.
+        /// Unused by PDF now; kept for any caller that still keys off the configurable subfolder.
         /// </summary>
         public static string ResolveRememberedPath(string dwgPath, string rememberedPath, string freshDefault)
         {

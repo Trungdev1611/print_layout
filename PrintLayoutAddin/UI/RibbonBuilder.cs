@@ -172,8 +172,8 @@ namespace PrintLayoutAddin.UI
                     .SendStringToExecute("_PLLICENSE ", true, false, true))
             };
 
-            panelSource.Items.Add(btnAuto);
             panelSource.Items.Add(btnFrameSetup);
+            panelSource.Items.Add(btnAuto);
             panelSource.Items.Add(btnStt);
             panelSource.Items.Add(btnLayout);
             panelSource.Items.Add(btnSheetSet);
