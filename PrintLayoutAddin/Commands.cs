@@ -163,6 +163,7 @@ namespace PrintLayoutAddin
             DuplicateAction? rememberedAction = null;
             var lm = Autodesk.AutoCAD.DatabaseServices.LayoutManager.Current;
             string vpLayer = Config.Instance.VpLayer;
+            var orderedNames = new List<string>();
 
             // Unlock any locked layers for the duration of the command —
             // CopyLayout + Viewport creation + template-viewport erase all fail with eOnLockedLayer
@@ -200,6 +201,7 @@ namespace PrintLayoutAddin
                             return;
                         case DuplicateAction.Skip:
                             skipped++;
+                            if (lm.LayoutExists(name)) orderedNames.Add(name);
                             continue;
                         case DuplicateAction.Overwrite:
                             lm.DeleteLayout(name);
@@ -213,6 +215,7 @@ namespace PrintLayoutAddin
                 try
                 {
                     var layoutId = LayoutBuilder.CreateLayoutFromTemplate(db, name, templateLayout);
+                    orderedNames.Add(name);
 
                     // Viewport entity creation requires TILEMODE = 0 (paper space active).
                     // Switch current layout for every frame, not only when picking corners.
@@ -234,6 +237,14 @@ namespace PrintLayoutAddin
             }
             finally
             {
+                try
+                {
+                    LayoutBuilder.PlaceLayoutsAfterTemplate(db, templateLayout, orderedNames);
+                }
+                catch (System.Exception ex)
+                {
+                    ed.WriteMessage($"\nCould not reorder layout tabs: {ex.Message}");
+                }
                 RelockLayers(db, relockIds);
             }
 

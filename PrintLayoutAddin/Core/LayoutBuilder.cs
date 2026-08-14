@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.Geometry;
 
@@ -42,6 +44,73 @@ namespace PrintLayoutAddin.Core
             }
 
             return layoutId;
+        }
+
+        /// <summary>
+        /// CopyLayout inserts each clone immediately after the template, so creating
+        /// 01 then 02 yields tabs Layout1, 02, 01. Rebuild TabOrder:
+        /// Model, template, then <paramref name="afterTemplate"/> (numeric STT order),
+        /// then any other paper layouts in their previous relative order.
+        /// </summary>
+        public static void PlaceLayoutsAfterTemplate(
+            Database db, string templateLayoutName, IList<string> afterTemplate)
+        {
+            if (afterTemplate == null || afterTemplate.Count == 0) return;
+
+            var wanted = afterTemplate
+                .Where(n => !string.IsNullOrWhiteSpace(n))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (wanted.Count == 0) return;
+
+            using (var tr = db.TransactionManager.StartTransaction())
+            {
+                var dict = (DBDictionary)tr.GetObject(db.LayoutDictionaryId, OpenMode.ForRead);
+                var all = new List<Layout>();
+                foreach (DBDictionaryEntry e in dict)
+                {
+                    var layout = (Layout)tr.GetObject(e.Value, OpenMode.ForRead);
+                    all.Add(layout);
+                }
+
+                var model = all.FirstOrDefault(l => l.ModelType);
+                var paper = all.Where(l => !l.ModelType).OrderBy(l => l.TabOrder).ToList();
+
+                Layout Find(string name) =>
+                    paper.FirstOrDefault(l =>
+                        string.Equals(l.LayoutName, name, StringComparison.OrdinalIgnoreCase));
+
+                var template = Find(templateLayoutName);
+                var batch = new List<Layout>();
+                foreach (var name in wanted)
+                {
+                    var layout = Find(name);
+                    if (layout == null) continue;
+                    if (template != null && layout.ObjectId == template.ObjectId) continue;
+                    batch.Add(layout);
+                }
+
+                var batchIds = new HashSet<ObjectId>(batch.Select(l => l.ObjectId));
+                var rest = paper.Where(l =>
+                    (template == null || l.ObjectId != template.ObjectId)
+                    && !batchIds.Contains(l.ObjectId)).ToList();
+
+                var ordered = new List<Layout>();
+                if (model != null) ordered.Add(model);
+                if (template != null) ordered.Add(template);
+                ordered.AddRange(batch);
+                ordered.AddRange(rest);
+
+                for (int i = 0; i < ordered.Count; i++)
+                {
+                    var layout = ordered[i];
+                    if (!layout.IsWriteEnabled)
+                        layout = (Layout)tr.GetObject(layout.ObjectId, OpenMode.ForWrite);
+                    layout.TabOrder = i;
+                }
+
+                tr.Commit();
+            }
         }
 
         private static void TemporarilyUnlockLayer(ObjectId layerId, Transaction tr)

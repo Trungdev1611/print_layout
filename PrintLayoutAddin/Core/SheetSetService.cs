@@ -164,6 +164,53 @@ namespace PrintLayoutAddin.Core
         }
 
         /// <summary>
+        /// Sort consecutive sheet rows (same subset) by STT / layout name: axx01, axx02, axx10.
+        /// Used only when writing a DST (PLAYOUT auto-sync), not in the dialog.
+        /// </summary>
+        private static void SortSheetRunsByStt(IList<SheetSetEntry> entries)
+        {
+            if (entries == null || entries.Count < 2) return;
+            int i = 0;
+            while (i < entries.Count)
+            {
+                var row = entries[i];
+                if (row == null || row.IsSubset)
+                {
+                    i++;
+                    continue;
+                }
+
+                int start = i;
+                string subset = row.SubsetName ?? "";
+                int level = row.SubsetLevel;
+                i++;
+                while (i < entries.Count)
+                {
+                    var next = entries[i];
+                    if (next == null || next.IsSubset) break;
+                    if (next.SubsetLevel != level) break;
+                    if (!string.Equals(next.SubsetName ?? "", subset, StringComparison.OrdinalIgnoreCase))
+                        break;
+                    i++;
+                }
+
+                int n = i - start;
+                if (n <= 1) continue;
+                var sorted = new List<SheetSetEntry>(n);
+                for (int k = 0; k < n; k++) sorted.Add(entries[start + k]);
+                sorted.Sort((a, b) =>
+                {
+                    string ka = a?.Layout?.Name ?? a?.SheetNumber ?? "";
+                    string kb = b?.Layout?.Name ?? b?.SheetNumber ?? "";
+                    int c = FrameScanner.SttComparer.Compare(ka, kb);
+                    if (c != 0) return c;
+                    return FrameScanner.SttComparer.Compare(a?.SheetNumber ?? "", b?.SheetNumber ?? "");
+                });
+                for (int k = 0; k < n; k++) entries[start + k] = sorted[k];
+            }
+        }
+
+        /// <summary>
         /// Silent Create/Update of the default DST for the active DWG after PLAYOUT.
         /// Preserves existing subset tree when the DST already exists; appends new layouts;
         /// refreshes Title from DrawingName for sheets of this DWG.
@@ -186,6 +233,8 @@ namespace PrintLayoutAddin.Core
                 .Where(l => !l.Name.Equals(template, StringComparison.OrdinalIgnoreCase))
                 .GroupBy(l => l.Name, StringComparer.OrdinalIgnoreCase)
                 .Select(g => g.First())
+                .OrderBy(l => l.Name, FrameScanner.SttComparer)
+                .ThenBy(l => l.TabOrder)
                 .ToList();
             if (layoutList.Count == 0)
             {
@@ -295,6 +344,8 @@ namespace PrintLayoutAddin.Core
                     });
                 }
             }
+
+            SortSheetRunsByStt(entries);
 
             try
             {
@@ -823,6 +874,9 @@ namespace PrintLayoutAddin.Core
                 IAcSmSubset currentSubset = subsetStack.Count > 0
                     ? subsetStack[subsetStack.Count - 1]
                     : null;
+                object host = currentSubset != null ? (object)currentSubset : sheetSet;
+                IAcSmComponent insertAfter = PeekLastOwnedComponent(host);
+
                 IAcSmPersist initOwner = currentSubset != null
                     ? (IAcSmPersist)currentSubset
                     : (IAcSmPersist)sheetSet;
@@ -855,17 +909,7 @@ namespace PrintLayoutAddin.Core
                         : entry.Title.Trim());
                 TrySetRevisionNumber(sheet, entry.Revision ?? "");
 
-                try
-                {
-                    if (currentSubset != null)
-                        currentSubset.InsertComponent(sheet, null);
-                    else
-                        sheetSet.InsertComponent(sheet, null);
-                }
-                catch (COMException)
-                {
-                    // Already in the set — safe to continue.
-                }
+                InsertComponentAppend(host, sheet, insertAfter);
 
                 ReleaseCom(sheet);
                 ReleaseCom(layoutRef);
@@ -873,6 +917,62 @@ namespace PrintLayoutAddin.Core
 
             foreach (var s in subsetStack) ReleaseCom(s);
             subsetStack.Clear();
+        }
+
+        /// <summary>
+        /// InsertComponent(comp, null) prepends. Peek the last child first, then append
+        /// with InsertComponentAfter so axx01, axx02 stay in table order in the DST.
+        /// </summary>
+        private static void InsertComponentAppend(object host, IAcSmComponent component, IAcSmComponent after)
+        {
+            if (host == null || component == null) return;
+            try
+            {
+                if (after != null && !ReferenceEquals(after, component))
+                {
+                    if (host is IAcSmSubset sub) sub.InsertComponentAfter(component, after);
+                    else if (host is IAcSmSheetSet ss) ss.InsertComponentAfter(component, after);
+                    return;
+                }
+
+                if (host is IAcSmSubset sub0) sub0.InsertComponent(component, null);
+                else if (host is IAcSmSheetSet ss0) ss0.InsertComponent(component, null);
+            }
+            catch (COMException)
+            {
+                try
+                {
+                    if (after != null && !ReferenceEquals(after, component))
+                    {
+                        if (host is IAcSmSubset sub) sub.InsertComponentAfter(component, after);
+                        else if (host is IAcSmSheetSet ss) ss.InsertComponentAfter(component, after);
+                    }
+                }
+                catch { }
+            }
+        }
+
+        private static IAcSmComponent PeekLastOwnedComponent(object host)
+        {
+            object[] owned = null;
+            try
+            {
+                if (host is IAcSmSheetSet ss) ss.GetDirectlyOwnedObjects(out owned);
+                else if (host is IAcSmSubset sub) sub.GetDirectlyOwnedObjects(out owned);
+            }
+            catch
+            {
+                return null;
+            }
+
+            if (owned == null || owned.Length == 0) return null;
+            IAcSmComponent last = null;
+            foreach (var item in owned)
+            {
+                if (item is IAcSmSheet || item is IAcSmSubset)
+                    last = (IAcSmComponent)item;
+            }
+            return last;
         }
 
         /// <summary>
@@ -1821,10 +1921,12 @@ namespace PrintLayoutAddin.Core
             IAcSmPersist owner = host as IAcSmPersist;
             if (owner == null) return false;
 
-            IAcSmAcDbLayoutReference layoutRef = null;
+                IAcSmAcDbLayoutReference layoutRef = null;
             IAcSmSheet sheet = null;
             try
             {
+                var insertAfter = PeekLastOwnedComponent(host);
+
                 layoutRef = (IAcSmAcDbLayoutReference)CreateComObject("AcSmAcDbLayoutReference");
                 layoutRef.InitNew(owner);
                 layoutRef.SetFileName(dwgPath);
@@ -1845,14 +1947,7 @@ namespace PrintLayoutAddin.Core
                     layoutName, layout.DrawingName, dwgPath));
                 TrySetRevisionNumber(sheet, "");
 
-                try
-                {
-                    if (host is IAcSmSubset sub)
-                        sub.InsertComponent(sheet, null);
-                    else if (host is IAcSmSheetSet ss)
-                        ss.InsertComponent(sheet, null);
-                }
-                catch (COMException) { }
+                InsertComponentAppend(host, sheet, insertAfter);
 
                 return true;
             }

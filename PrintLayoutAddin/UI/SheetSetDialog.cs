@@ -351,9 +351,6 @@ namespace PrintLayoutAddin.UI
                 Color.FromArgb(71, 85, 105), Color.White);
             var down = StyleButton(ToolbarButton("Move Down", () => MoveSelected(1)),
                 Color.FromArgb(100, 116, 139), Color.White);
-            // Amber — renumber
-            var renumber = StyleButton(ToolbarButton("Renumber 1…N", Renumber),
-                Color.FromArgb(217, 119, 6), Color.White);
             // Rose — delete checked rows from table only (DST on Create/Update)
             var deleteSel = StyleButton(ToolbarButton("Delete sheet selected", DeleteSelectedRows),
                 Color.FromArgb(255, 51, 51), Color.White);
@@ -377,7 +374,6 @@ namespace PrintLayoutAddin.UI
 
             bar.Controls.Add(up);
             bar.Controls.Add(down);
-            bar.Controls.Add(renumber);
             bar.Controls.Add(refresh);
             bar.Controls.Add(exportExcel);
             bar.Controls.Add(importExcel);
@@ -950,21 +946,6 @@ namespace PrintLayoutAddin.UI
                     entry.SubsetLevel = top.Level;
                 }
             }
-        }
-
-        private void Renumber()
-        {
-            CommitGrid();
-            int number = 1;
-            foreach (var entry in _entries)
-            {
-                if (entry.IsSubset) continue;
-                entry.SheetNumber = number.ToString();
-                number++;
-            }
-            _source.ResetBindings(false);
-            ApplyRowStyles();
-            SetStatus($"Renumbered {number - 1} sheet(s).", false);
         }
 
         private void StartImport()
