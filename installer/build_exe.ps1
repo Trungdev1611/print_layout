@@ -53,7 +53,7 @@ foreach ($tfm in $tfmMap.Keys) {
     $srcDir  = Join-Path $BinRelease $tfm
     $destDir = Join-Path $BundleContents $tfmMap[$tfm]
     if (-not (Test-Path $destDir)) { New-Item -ItemType Directory -Path $destDir | Out-Null }
-    foreach ($f in @("PrintLayoutAddin.dll", "config.json")) {
+    foreach ($f in @("PrintLayoutAddin.v201.dll", "config.json")) {
         $src = Join-Path $srcDir $f
         if (-not (Test-Path $src)) { throw "Missing build output: $src" }
         Copy-Item -Path $src -Destination (Join-Path $destDir $f) -Force

@@ -441,9 +441,9 @@ namespace PrintLayoutAddin.Core
                 if (createdNew || string.IsNullOrWhiteSpace(sheetSet.GetName()))
                 {
                     sheetSet.SetName(
-                        string.IsNullOrWhiteSpace(sheetSetName)
-                            ? Path.GetFileNameWithoutExtension(dstPath)
-                            : sheetSetName.Trim());
+                    string.IsNullOrWhiteSpace(sheetSetName)
+                        ? Path.GetFileNameWithoutExtension(dstPath)
+                        : sheetSetName.Trim());
                 }
 
                 string newSheetFolder = dir;
@@ -867,7 +867,7 @@ namespace PrintLayoutAddin.Core
                 }
 
                 if (entry.Layout == null) continue;
-                if (string.IsNullOrWhiteSpace(entry.DwgPath) || !File.Exists(entry.DwgPath))
+                    if (string.IsNullOrWhiteSpace(entry.DwgPath) || !File.Exists(entry.DwgPath))
                     throw new FileNotFoundException(
                         "Save the source DWG before creating a sheet set.", entry.DwgPath);
 
@@ -898,7 +898,7 @@ namespace PrintLayoutAddin.Core
                     throw;
                 }
 
-                if (sheet == null)
+                    if (sheet == null)
                     throw new InvalidOperationException(
                         $"Could not import layout '{entry.Layout.Name}'.");
 
@@ -911,9 +911,9 @@ namespace PrintLayoutAddin.Core
 
                 InsertComponentAppend(host, sheet, insertAfter);
 
-                ReleaseCom(sheet);
-                ReleaseCom(layoutRef);
-            }
+                    ReleaseCom(sheet);
+                    ReleaseCom(layoutRef);
+                }
 
             foreach (var s in subsetStack) ReleaseCom(s);
             subsetStack.Clear();
@@ -1999,11 +1999,11 @@ namespace PrintLayoutAddin.Core
             bool weOpened,
             bool locked,
             bool commit)
-        {
-            if (database != null && locked)
             {
+                if (database != null && locked)
+                {
                 try { database.UnlockDb(database, commit); } catch { }
-            }
+                }
             if (weOpened)
             {
                 if (manager != null && database != null)
@@ -2012,7 +2012,7 @@ namespace PrintLayoutAddin.Core
                 }
                 ReleaseCom(database);
             }
-            ReleaseCom(manager);
+                ReleaseCom(manager);
         }
 
         private static object CreateComObject(string className)

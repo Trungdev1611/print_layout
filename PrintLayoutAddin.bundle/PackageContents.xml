@@ -3,7 +3,7 @@
                     AutodeskProduct="AutoCAD"
                     Name="PrintLayoutAddin"
                     Description="Auto-number frames and generate layouts + viewports"
-                    AppVersion="2.0.0"
+                    AppVersion="2.0.1"
                     ProductCode="{A3F51234-1C8E-4F8A-9C2D-0001AABBCCDD}"
                     SupportedLocales="Enu"
                     ProductType="Application">
@@ -14,7 +14,7 @@
   <Components Description="PrintLayoutAddin (.NET Framework, AutoCAD 2018-2024)">
     <RuntimeRequirements OS="Win64" Platform="AutoCAD" SeriesMin="R22.0" SeriesMax="R24.3" />
     <ComponentEntry AppName="PrintLayoutAddin"
-                    ModuleName="./Contents/net48/PrintLayoutAddin.dll"
+                    ModuleName="./Contents/net48/PrintLayoutAddin.v201.dll"
                     AppDescription="PrintLayoutAddin"
                     LoadOnAutoCADStartup="True"
                     LoadOnCommandInvocation="False" />
@@ -25,7 +25,7 @@
   <Components Description="PrintLayoutAddin (.NET 8, AutoCAD 2025+)">
     <RuntimeRequirements OS="Win64" Platform="AutoCAD" SeriesMin="R25.0" />
     <ComponentEntry AppName="PrintLayoutAddin"
-                    ModuleName="./Contents/net8/PrintLayoutAddin.dll"
+                    ModuleName="./Contents/net8/PrintLayoutAddin.v201.dll"
                     AppDescription="PrintLayoutAddin"
                     LoadOnAutoCADStartup="True"
                     LoadOnCommandInvocation="False" />

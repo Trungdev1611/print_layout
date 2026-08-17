@@ -10,12 +10,12 @@
     <UseWPF Condition="'$(TargetFramework)' == 'net8.0-windows'">true</UseWPF>
     <OutputType>Library</OutputType>
     <RootNamespace>PrintLayoutAddin</RootNamespace>
-    <AssemblyName>PrintLayoutAddin</AssemblyName>
+    <AssemblyName>PrintLayoutAddin.v201</AssemblyName>
     <LangVersion>latest</LangVersion>
     <!-- Single source of truth for the plugin version (shown in the License dialog). -->
-    <Version>2.0.0</Version>
-    <AssemblyVersion>2.0.0.0</AssemblyVersion>
-    <FileVersion>2.0.0.0</FileVersion>
+    <Version>2.0.1</Version>
+    <AssemblyVersion>2.0.1.0</AssemblyVersion>
+    <FileVersion>2.0.1.0</FileVersion>
     <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
     <!-- Each target framework lands in its own bin subfolder so the two DLLs never collide. -->
     <AppendTargetFrameworkToOutputPath>true</AppendTargetFrameworkToOutputPath>
