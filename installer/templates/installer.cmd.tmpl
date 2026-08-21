@@ -1,15 +1,15 @@
 @echo off
 REM Runs inside the IExpress temp extraction folder.
-REM Sibling files: PrintLayoutAddin.bundle.zip
+REM Sibling files: {{BUNDLE_FOLDER}}.zip
 setlocal enabledelayedexpansion
 
 set TARGET_PARENT=%APPDATA%\Autodesk\ApplicationPlugins
-set TARGET=%TARGET_PARENT%\PrintLayoutAddin.bundle
-set ZIP=%~dp0PrintLayoutAddin.bundle.zip
+set TARGET=%TARGET_PARENT%\{{BUNDLE_FOLDER}}
+set ZIP=%~dp0{{BUNDLE_FOLDER}}.zip
 
 echo.
 echo ====================================================
-echo   PrintLayoutAddin - Setup
+echo   {{ADDIN_NAME}} - Setup
 echo ====================================================
 echo.
 
@@ -60,8 +60,8 @@ if not exist "%TARGET%\PackageContents.xml" (
 
 echo.
 echo Installation successful.
-echo Open AutoCAD to see the "Print Layout" tab on the ribbon.
-echo Commands available from the command line: PLSTT, PLAYOUT, PLPRINT, PLVP, PLAUTO, PLCLEAN, PLSHEETSET, PLFRAME_SETUP, PLKEYS, PLLICENSE.
+echo Open AutoCAD to see the "{{RIBBON_TAB}}" tab on the ribbon.
+echo Commands available from the command line: {{COMMANDS}}.
 echo.
 pause
 endlocal

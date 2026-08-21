@@ -1,0 +1,19 @@
+{
+  "AddinName": "PrintLayoutAddin",
+  "DllFileName": "PrintLayoutAddin.v201.dll",
+  "ProjectPath": "PrintLayoutAddin/PrintLayoutAddin.csproj",
+  "BundleFolderName": "PrintLayoutAddin.bundle",
+  "RibbonTabName": "Print Layout",
+  "Commands": [
+    "PLSTT",
+    "PLAYOUT",
+    "PLPRINT",
+    "PLVP",
+    "PLAUTO",
+    "PLCLEAN",
+    "PLSHEETSET",
+    "PLFRAME_SETUP",
+    "PLKEYS",
+    "PLLICENSE"
+  ]
+}

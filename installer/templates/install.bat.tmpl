@@ -1,22 +1,22 @@
 @echo off
-REM Install PrintLayoutAddin into AutoCAD ApplicationPlugins (auto-loads on every AutoCAD start)
+REM Install {{ADDIN_NAME}} into AutoCAD ApplicationPlugins (auto-loads on every AutoCAD start)
 setlocal
 
-set TARGET=%APPDATA%\Autodesk\ApplicationPlugins\PrintLayoutAddin.bundle
+set TARGET=%APPDATA%\Autodesk\ApplicationPlugins\{{BUNDLE_FOLDER}}
 REM Bundle sits next to install.bat (distributed zip) or one level up (repo: installer\ -> root)
-set SRC=%~dp0PrintLayoutAddin.bundle
-if not exist "%SRC%" set SRC=%~dp0..\PrintLayoutAddin.bundle
+set SRC=%~dp0{{BUNDLE_FOLDER}}
+if not exist "%SRC%" set SRC=%~dp0..\{{BUNDLE_FOLDER}}
 
 if not exist "%SRC%" (
   echo [ERROR] Folder not found: %SRC%
-  echo Make sure install.bat sits next to the PrintLayoutAddin.bundle folder.
+  echo Make sure install.bat sits next to the {{BUNDLE_FOLDER}} folder.
   pause
   exit /b 1
 )
 
 echo.
 echo ====================================================
-echo   PrintLayoutAddin - Installer
+echo   {{ADDIN_NAME}} - Installer
 echo ====================================================
 echo.
 echo Please close all AutoCAD windows before continuing.
@@ -35,8 +35,8 @@ if errorlevel 1 (
 
 echo.
 echo Installation successful.
-echo Open AutoCAD to see the "Print Layout" tab on the ribbon.
-echo Commands available from the command line: PLSTT, PLAYOUT, PLPRINT, PLVP, PLAUTO, PLCLEAN, PLSHEETSET, PLFRAME_SETUP, PLKEYS, PLLICENSE.
+echo Open AutoCAD to see the "{{RIBBON_TAB}}" tab on the ribbon.
+echo Commands available from the command line: {{COMMANDS}}.
 echo.
 pause
 endlocal

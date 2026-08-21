@@ -13,10 +13,15 @@
     <AssemblyName>PrintLayoutAddin.v201</AssemblyName>
     <LangVersion>latest</LangVersion>
     <!-- Single source of truth for the plugin version (shown in the License dialog). -->
-    <Version>2.0.1</Version>
-    <AssemblyVersion>2.0.1.0</AssemblyVersion>
-    <FileVersion>2.0.1.0</FileVersion>
-    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    <Version>2.7.1</Version>
+    <AssemblyVersion>2.9.1.0</AssemblyVersion>
+    <FileVersion>2.9.1.0</FileVersion>
+    <!-- AutoCAD loads this DLL directly (not via `dotnet exec`), so it never reads our
+         deps.json to resolve package dependencies from the NuGet cache. Real runtime
+         deps (FlexiLicense) must be physically copied next to the output DLL; SDK-style
+         Library projects targeting net8.0+ default this to false. AutoCAD-provided SDK
+         packages (ModPlus.AutoCAD.API.2025) opt back out via ExcludeAssets="runtime". -->
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
     <!-- Each target framework lands in its own bin subfolder so the two DLLs never collide. -->
     <AppendTargetFrameworkToOutputPath>true</AppendTargetFrameworkToOutputPath>
     <!-- Local AutoCAD SDK used ONLY for the net48 build. Override with /p:AutoCADPath=... -->
@@ -63,9 +68,12 @@
   <!-- AutoCAD 2025 moved its managed runtime to .NET 8, so a separate DLL is required.
        Reference assemblies (accoremgd, acdbmgd, acmgd, AdWindows, ...) come from NuGet,
        so building for 2025 does NOT require AutoCAD 2025 to be installed locally.
-       CopyLocalLockFileAssemblies=false keeps them out of the output (AutoCAD provides them). -->
+       ExcludeAssets=runtime on the PackageReference below keeps them out of the output
+       (AutoCAD provides them) without blocking other packages like FlexiLicense. -->
   <ItemGroup Condition="'$(TargetFramework)' == 'net8.0-windows'">
-    <PackageReference Include="ModPlus.AutoCAD.API.2025" Version="3.0.0" />
+    <!-- AutoCAD 2025 provides these DLLs at runtime; ExcludeAssets=runtime keeps them
+         out of our output while still resolving the compile-time reference. -->
+    <PackageReference Include="ModPlus.AutoCAD.API.2025" Version="3.0.0" ExcludeAssets="runtime" />
   </ItemGroup>
 
   <!-- Sheet Set COM API (AcSm*). Late-bound InvokeMember fails on modern AutoCAD
@@ -84,17 +92,27 @@
     </None>
   </ItemGroup>
 
+  <ItemGroup>
+    <PackageReference Include="FlexiLicense" Version="1.5.0" />
+  </ItemGroup>
+
   <!-- Keep the deployable bundle (what install.bat copies) in sync with the freshly built DLLs.
        Each target framework is copied to its own Contents subfolder, matching PackageContents.xml.
-       Runs once per inner (per-TFM) build; the empty-TFM outer build is skipped by the condition. -->
+       Runs once per inner (per-TFM) build; the empty-TFM outer build is skipped by the condition.
+       Copies the WHOLE output folder (not just $(TargetPath)) so runtime dependencies that need
+       to sit next to the DLL, FlexiLicense.dll today and whatever gets added later, always follow
+       along. Missing just this one file is exactly what silently broke the ribbon-loaded copy:
+       Addin Manager pointed straight at bin/Debug and worked; the installed bundle didn't. -->
   <Target Name="CopyToBundle" AfterTargets="Build" Condition="'$(TargetFramework)' != ''">
     <PropertyGroup>
       <BundleSub Condition="'$(TargetFramework)' == 'net48'">net48</BundleSub>
       <BundleSub Condition="'$(TargetFramework)' == 'net8.0-windows'">net8</BundleSub>
       <BundleContents>$(MSBuildProjectDirectory)\..\PrintLayoutAddin.bundle\Contents\$(BundleSub)</BundleContents>
     </PropertyGroup>
-    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(BundleContents)" SkipUnchangedFiles="false" />
-    <Copy SourceFiles="$(TargetDir)config.json" DestinationFolder="$(BundleContents)" SkipUnchangedFiles="false" Condition="Exists('$(TargetDir)config.json')" />
+    <ItemGroup>
+      <BundleFiles Include="$(TargetDir)**\*.*" Exclude="$(TargetDir)**\*.pdb" />
+    </ItemGroup>
+    <Copy SourceFiles="@(BundleFiles)" DestinationFolder="$(BundleContents)" SkipUnchangedFiles="false" />
   </Target>
 
 </Project>

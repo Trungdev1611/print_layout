@@ -13,7 +13,8 @@ using PrintLayoutAddin.Core;
 using PrintLayoutAddin.UI;
 using AcadApp = Autodesk.AutoCAD.ApplicationServices.Application;
 using Registry = Microsoft.Win32.Registry;
-
+using FlexiLicense;
+using System.Reflection;
 namespace PrintLayoutAddin
 {
     public class Commands
@@ -26,6 +27,12 @@ namespace PrintLayoutAddin
         {
             var doc = AcadApp.DocumentManager.MdiActiveDocument;
             if (doc == null) return;
+
+            var licResult1 = LicenseClient.CheckCached("Print_layout", Assembly.GetExecutingAssembly());
+            LicenseLog.Write("PLSTT", licResult1);
+            if (!LicenseClient.HandleResult(licResult1)) return;
+
+
             var ed = doc.Editor;
             var db = doc.Database;
 
@@ -125,6 +132,9 @@ namespace PrintLayoutAddin
             var ed = doc.Editor;
             var db = doc.Database;
 
+            var licResult = LicenseClient.CheckCached("Print_layout", Assembly.GetExecutingAssembly());
+            LicenseLog.Write("PLAYOUT", licResult);
+            if (!LicenseClient.HandleResult(licResult)) return;
             if (!LicenseGate.Allow(ed)) return;
 
             var choice = PickBlock(db);
@@ -171,90 +181,90 @@ namespace PrintLayoutAddin
             var relockIds = UnlockAllLayers(db);
 
             using (LayoutDstSyncWatcher.Suppress())
-            try
-            {
-            foreach (var frame in frames)
-            {
-                string name = frame.Stt;
-
-                if (lm.LayoutExists(name))
+                try
                 {
-                    DuplicateAction act;
-                    if (rememberedAction.HasValue)
+                    foreach (var frame in frames)
                     {
-                        act = rememberedAction.Value;
-                    }
-                    else
-                    {
-                        using (var dlg = new DuplicateLayoutDialog(name))
+                        string name = frame.Stt;
+
+                        if (lm.LayoutExists(name))
                         {
-                            if (AcadApp.ShowModalDialog(dlg) != DialogResult.OK) return;
-                            act = dlg.Action;
-                            if (dlg.ApplyToAll) rememberedAction = act;
+                            DuplicateAction act;
+                            if (rememberedAction.HasValue)
+                            {
+                                act = rememberedAction.Value;
+                            }
+                            else
+                            {
+                                using (var dlg = new DuplicateLayoutDialog(name))
+                                {
+                                    if (AcadApp.ShowModalDialog(dlg) != DialogResult.OK) return;
+                                    act = dlg.Action;
+                                    if (dlg.ApplyToAll) rememberedAction = act;
+                                }
+                            }
+
+                            switch (act)
+                            {
+                                case DuplicateAction.Abort:
+                                    ed.WriteMessage("\nCommand aborted.");
+                                    return;
+                                case DuplicateAction.Skip:
+                                    skipped++;
+                                    if (lm.LayoutExists(name))
+                                    {
+                                        orderedNames.Add(name);
+                                        // Kept as-is, but it is still one of ours — stamp it so a later
+                                        // delete offers the DST cleanup (also backfills pre-2.0 drawings).
+                                        PlayoutLayoutStamp.Stamp(db, lm.GetLayoutId(name));
+                                    }
+                                    continue;
+                                case DuplicateAction.Overwrite:
+                                    lm.DeleteLayout(name);
+                                    break;
+                                case DuplicateAction.Rename:
+                                    name = UniqueLayoutName(lm, name);
+                                    break;
+                            }
+                        }
+
+                        try
+                        {
+                            var layoutId = LayoutBuilder.CreateLayoutFromTemplate(db, name, templateLayout);
+                            orderedNames.Add(name);
+
+                            // Viewport entity creation requires TILEMODE = 0 (paper space active).
+                            // Switch current layout for every frame, not only when picking corners.
+                            lm.CurrentLayout = name;
+
+                            var diag = LayoutBuilder.AddViewport(db, layoutId, corners.Value.P1, corners.Value.P2, frame, vpLayer);
+                            if (created == 0 && !string.IsNullOrEmpty(LayoutBuilder.LastLayerAction))
+                                ed.WriteMessage("\n  " + LayoutBuilder.LastLayerAction + ".");
+                            ed.WriteMessage($"\n  [{name}] {diag}");
+                            created++;
+                        }
+                        catch (System.Exception ex)
+                        {
+                            errors++;
+                            ed.WriteMessage($"\nFailed to create layout {name}: {ex.Message}");
                         }
                     }
 
-                    switch (act)
+                }
+                finally
+                {
+                    try
                     {
-                        case DuplicateAction.Abort:
-                            ed.WriteMessage("\nCommand aborted.");
-                            return;
-                        case DuplicateAction.Skip:
-                            skipped++;
-                            if (lm.LayoutExists(name))
-                            {
-                                orderedNames.Add(name);
-                                // Kept as-is, but it is still one of ours — stamp it so a later
-                                // delete offers the DST cleanup (also backfills pre-2.0 drawings).
-                                PlayoutLayoutStamp.Stamp(db, lm.GetLayoutId(name));
-                            }
-                            continue;
-                        case DuplicateAction.Overwrite:
-                            lm.DeleteLayout(name);
-                            break;
-                        case DuplicateAction.Rename:
-                            name = UniqueLayoutName(lm, name);
-                            break;
+                        var tabs = LayoutBuilder.PlaceLayoutsAfterTemplate(db, templateLayout, orderedNames);
+                        if (!string.IsNullOrWhiteSpace(tabs))
+                            ed.WriteMessage("\nTab order: Model, " + tabs);
                     }
+                    catch (System.Exception ex)
+                    {
+                        ed.WriteMessage($"\nCould not reorder layout tabs: {ex.Message}");
+                    }
+                    RelockLayers(db, relockIds);
                 }
-
-                try
-                {
-                    var layoutId = LayoutBuilder.CreateLayoutFromTemplate(db, name, templateLayout);
-                    orderedNames.Add(name);
-
-                    // Viewport entity creation requires TILEMODE = 0 (paper space active).
-                    // Switch current layout for every frame, not only when picking corners.
-                    lm.CurrentLayout = name;
-
-                    var diag = LayoutBuilder.AddViewport(db, layoutId, corners.Value.P1, corners.Value.P2, frame, vpLayer);
-                    if (created == 0 && !string.IsNullOrEmpty(LayoutBuilder.LastLayerAction))
-                        ed.WriteMessage("\n  " + LayoutBuilder.LastLayerAction + ".");
-                    ed.WriteMessage($"\n  [{name}] {diag}");
-                    created++;
-                }
-                catch (System.Exception ex)
-                {
-                    errors++;
-                    ed.WriteMessage($"\nFailed to create layout {name}: {ex.Message}");
-                }
-            }
-
-            }
-            finally
-            {
-                try
-                {
-                    var tabs = LayoutBuilder.PlaceLayoutsAfterTemplate(db, templateLayout, orderedNames);
-                    if (!string.IsNullOrWhiteSpace(tabs))
-                        ed.WriteMessage("\nTab order: Model, " + tabs);
-                }
-                catch (System.Exception ex)
-                {
-                    ed.WriteMessage($"\nCould not reorder layout tabs: {ex.Message}");
-                }
-                RelockLayers(db, relockIds);
-            }
 
             ed.WriteMessage($"\nDone. Created {created} layouts, skipped {skipped}, errors {errors}.");
             ed.WriteMessage("\nTitle-block Sheet Set fields may show #### until you Create / Update a DST.");
@@ -711,6 +721,9 @@ namespace PrintLayoutAddin
             var ed = doc.Editor;
             var db = doc.Database;
 
+            var licResult = LicenseClient.CheckCached("Print_layout", Assembly.GetExecutingAssembly());
+            LicenseLog.Write("PLPRINT", licResult);
+            if (!LicenseClient.HandleResult(licResult)) return;
             if (!LicenseGate.Allow(ed)) return;
 
             System.Collections.Generic.List<PrintableLayout> layouts;
@@ -833,6 +846,9 @@ namespace PrintLayoutAddin
             var doc = AcadApp.DocumentManager.MdiActiveDocument;
             if (doc == null) return;
             var ed = doc.Editor;
+            var licResult = LicenseClient.CheckCached("Print_layout", Assembly.GetExecutingAssembly());
+            LicenseLog.Write("PLSHEETSET", licResult);
+            if (!LicenseClient.HandleResult(licResult)) return;
             if (!LicenseGate.Allow(ed)) return;
             if (!EnsureSavedForPublish(doc, ed)) return;
 
@@ -915,6 +931,9 @@ namespace PrintLayoutAddin
             var ed = doc.Editor;
             var db = doc.Database;
 
+            var licResult = LicenseClient.CheckCached("Print_layout", Assembly.GetExecutingAssembly());
+            LicenseLog.Write("PLAUTO", licResult);
+            if (!LicenseClient.HandleResult(licResult)) return;
             if (!LicenseGate.Allow(ed)) return;
 
             if (!IsInModelSpace(db))
@@ -1024,6 +1043,9 @@ namespace PrintLayoutAddin
             var ed = doc.Editor;
             var db = doc.Database;
 
+            var licResult = LicenseClient.CheckCached("Print_layout", Assembly.GetExecutingAssembly());
+            LicenseLog.Write("PLCLEAN", licResult);
+            if (!LicenseClient.HandleResult(licResult)) return;
             if (!LicenseGate.Allow(ed)) return;
 
             var candidates = NativeFrameBuilder.ListAutoBlocks(db);
@@ -1257,6 +1279,9 @@ namespace PrintLayoutAddin
             var doc = AcadApp.DocumentManager.MdiActiveDocument;
             if (doc == null) return;
             var ed = doc.Editor;
+            var licResult = LicenseClient.CheckCached("Print_layout", Assembly.GetExecutingAssembly());
+            LicenseLog.Write("PLFRAME_SETUP", licResult);
+            if (!LicenseClient.HandleResult(licResult)) return;
             if (!LicenseGate.Allow(ed)) return;
 
             ShowTitleBlockSetupPalette();

@@ -36,7 +36,7 @@ if errorlevel 1 (
 echo.
 echo Installation successful.
 echo Open AutoCAD to see the "Print Layout" tab on the ribbon.
-echo Commands available from the command line: PLSTT, PLAYOUT, PLPRINT, PLVP, PLAUTO, PLCLEAN, PLSHEETSET, PLFRAME_SETUP, PLKEYS, PLLICENSE.
+echo Commands available from the command line: PLSTT, PLAYOUT, PLPRINT, PLVP, PLKEYS.
 echo.
 pause
 endlocal
