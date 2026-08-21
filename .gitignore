@@ -49,3 +49,4 @@ desktop.ini
 
 # ---- Claude Code local settings (per-user, not shared) ----
 .claude/settings.local.json
+PrintLayoutAddin.bundle/**/*.log
